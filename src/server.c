@@ -198,25 +198,23 @@ int server_process_peers(Server *server) {
     size = recvfrom(server->stun_socket, (char *)buffer, sizeof(buffer), 0,
                     (struct sockaddr *)&from, &from_size);
     if (size != 0 && size != SOCKET_ERROR) {
-      u8 response_buffer[1024];
-      u64 response_size;
+      u8 *response_buffer;
+      u64 response_size, mark;
       Message response;
-
       /* TODO: pase request message type, stop assuming is stun */
-
+      mark = server->scratch.used;
       response.header.type = MessageType_STUN_RESPONSE;
       response.stun_response.address = ntohl(from.sin_addr.S_un.S_addr);
       response.stun_response.port = ntohs(from.sin_port);
-
       message_serialize(&response, 0, &response_size);
-      assert(sizeof(response_buffer) >= response_size);
+      response_buffer = (u8 *)arena_alloc(&server->scratch, response_size, 4);
       message_serialize(&response, response_buffer, &response_size);
-
       if (sendto(server->stun_socket, (char *)response_buffer, response_size, 0,
                  (struct sockaddr *)&from, from_size) == SOCKET_ERROR) {
         printf("failed to send stun response\n");
         return 1;
       }
+      server->scratch.used = mark;
     }
   }
 
@@ -254,6 +252,7 @@ int server_process_peers(Server *server) {
         Peer *to_free;
         to_free = peer;
         peer = peer->next;
+        closesocket(to_free->socket);
         server_peer_free(server, to_free);
         continue;
       }
