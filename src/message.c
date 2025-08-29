@@ -6,6 +6,9 @@ void message_deserialize(Arena *arena, u8 *buffer, u64 size, Message *msg) {
   assert(message_size == size);
   msg->header.type = (MessageType)read_u8_be(buffer);
   switch (msg->header.type) {
+  case MessageType_STUN_REQUEST: {
+    /* empty body*/
+  } break;
   case MessageType_STUN_RESPONSE: {
     MessageStunResponse *stun_response = &msg->stun_response;
     stun_response->address = read_u32_be(buffer);
@@ -44,6 +47,9 @@ void message_serialize(Message *msg, u8 *buffer, u64 *size) {
   write_u32_be_or_count(buffer, *size, total_size);
   write_u8_be_or_count(buffer, (u8)msg->header.type, total_size);
   switch (msg->header.type) {
+  case MessageType_STUN_REQUEST: {
+    /* empty body*/
+  } break;
   case MessageType_STUN_RESPONSE: {
     MessageStunResponse *stun_response = &msg->stun_response;
     write_u32_be_or_count(buffer, stun_response->address, total_size);

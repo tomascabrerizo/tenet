@@ -5,6 +5,7 @@
 
 typedef enum MessageType {
   MessageType_PEER_INVALID,
+  MessageType_STUN_REQUEST,
   MessageType_STUN_RESPONSE,
   MessageType_PEER_CONNECTED,
   MessageType_PEERS_INFO,
@@ -16,6 +17,10 @@ typedef struct MessageHeader {
   struct MessageHeader *next;
   struct MessageHeader *prev;
 } MessageHeader;
+
+typedef struct MessageStunRequest {
+  MessageHeader header;
+} MessageStunRequest;
 
 typedef struct MessageStunResponse {
   MessageHeader header;
@@ -45,6 +50,7 @@ typedef struct MessagePeersInfo {
 
 typedef union Message {
   MessageHeader header;
+  MessageStunRequest strun_request;
   MessageStunResponse stun_response;
   MessagePeerConnected peer_connected;
   MessagePeersInfo peers_info;
