@@ -3,10 +3,14 @@
 
 #include "core.h"
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 typedef enum MessageType {
   MessageType_PEER_INVALID,
   MessageType_STUN_REQUEST,
   MessageType_STUN_RESPONSE,
+  MessageType_KEEPALIVE,
   MessageType_PEER_CONNECTED,
   MessageType_PEERS_INFO,
   MessageType_COUNT
@@ -34,17 +38,17 @@ typedef struct MessagePeerConnected {
   u16 port;
 } MessagePeerConnected;
 
-typedef struct PeersInfoNode {
+typedef struct PeerInfoNode {
   u32 address;
   u16 port;
-  struct PeersInfoNode *prev;
-  struct PeersInfoNode *next;
-} PeersInfoNode;
+  struct PeerInfoNode *prev;
+  struct PeerInfoNode *next;
+} PeerInfoNode;
 
 typedef struct MessagePeersInfo {
   MessageHeader header;
-  PeersInfoNode *first;
-  PeersInfoNode *last;
+  PeerInfoNode *first;
+  PeerInfoNode *last;
   u32 peers_count;
 } MessagePeersInfo;
 
@@ -55,6 +59,11 @@ typedef union Message {
   MessagePeerConnected peer_connected;
   MessagePeersInfo peers_info;
 } Message;
+
+s32 message_writeto(Arena *arena, SOCKET sock, struct sockaddr *to,
+                    Message *msg);
+s32 message_readfrom(Arena *arena, SOCKET sock, struct sockaddr *to,
+                     Message *msg);
 
 void message_deserialize(Arena *arena, u8 *buffer, u64 size, Message *msg);
 void message_serialize(Message *msg, u8 *buffer, u64 *size);

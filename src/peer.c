@@ -1,10 +1,8 @@
-#define inline
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#undef inline
-
 #include "core.h"
 #include "message.h"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 #define SERVER_ADDRESS "127.0.0.1"
 #define SERVER_PORT "8080"
@@ -27,22 +25,27 @@ typedef struct Peer {
   SOCKET stun_socket;
   struct addrinfo *ctrl_addr;
   struct addrinfo *stun_addr;
+  u64 own_address;
+  u16 own_port;
   PeerState state;
+  PeerInfoNode *peer_node_fisrt;
+  PeerInfoNode *peer_node_last;
+
+  u8 recv_buffer[kb(10)];
+  u32 recv_buffer_used;
+  b32 farming;
+  u32 bytes_to_farm;
 } Peer;
 
 void peer_process_state(Peer *peer) {
   switch (peer->state) {
   case PeerState_DONT_KNOW_ITSELF: {
-    u64 size, mark;
-    u8 *buffer;
+    u64 mark;
     Message msg;
     mark = peer->arena.used;
     msg.header.type = MessageType_STUN_REQUEST;
-    message_serialize(&msg, 0, &size);
-    buffer = arena_alloc(&peer->arena, size, 4);
-    message_serialize(&msg, buffer, &size);
-    sendto(peer->stun_socket, (char *)buffer, size, 0, peer->stun_addr->ai_addr,
-           (int)peer->stun_addr->ai_addrlen);
+    message_writeto(&peer->arena, peer->stun_socket, peer->stun_addr->ai_addr,
+                    &msg);
     peer->arena.used = mark;
     peer->state = PeerState_WAITIN_STUN_RESPONSE;
   } break;
@@ -55,28 +58,106 @@ void peer_process_state(Peer *peer) {
     timeout.tv_usec = 0;
     select(0, &readfds, 0, 0, &timeout);
     if (FD_ISSET(peer->stun_socket, &readfds)) {
-      /* TODO: saver address and port info */
+      u64 mark;
+      Message msg;
+      mark = peer->arena.used;
+      message_readfrom(&peer->arena, peer->stun_socket, 0, &msg);
+      assert(msg.header.type == MessageType_STUN_RESPONSE);
+      peer->own_address = msg.stun_response.address;
+      peer->own_port = msg.stun_response.port;
       peer->state = PeerState_KNOW_ITSELF;
+      peer->arena.used = mark;
     } else {
       peer->state = PeerState_DONT_KNOW_ITSELF;
     }
   } break;
   case PeerState_KNOW_ITSELF: {
-    /* peer needs to send his info over tcp to the ctrl server */
-    /* it also need to mantains his port mapped sending alive packet to stun
-     * server */
+    Message msg;
+    u8 *buffer;
+    u64 size, mark;
+    msg.header.type = MessageType_PEER_CONNECTED;
+    msg.peer_connected.address = 4321;
+    msg.peer_connected.port = 6969;
+    mark = peer->arena.used;
+    message_serialize(&msg, 0, &size);
+    buffer = arena_alloc(&peer->arena, size, 4);
+    message_serialize(&msg, buffer, &size);
+    send(peer->ctrl_socket, (char *)buffer, (s32)size, 0);
+    peer->arena.used = mark;
+    peer->state = PeerState_WAITIN_PEERS_INFO;
   } break;
   case PeerState_WAITIN_PEERS_INFO: {
-    /* just wait for ctrl server response */
+    s32 count;
+    fd_set readfds, writefds;
+    struct timeval timeout;
+    FD_ZERO(&readfds);
+    FD_ZERO(&writefds);
+    FD_SET(peer->ctrl_socket, &readfds);
+    FD_SET(peer->stun_socket, &writefds);
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    count = select(0, &readfds, 0, 0, &timeout);
+    if (count > 0) {
+      if (FD_ISSET(peer->ctrl_socket, &readfds)) {
+        s32 size;
+
+        size = recv(peer->ctrl_socket,
+                    (char *)peer->recv_buffer + peer->recv_buffer_used,
+                    array_len(peer->recv_buffer) - peer->recv_buffer_used, 0);
+        assert(size > 0 && size != SOCKET_ERROR);
+        peer->recv_buffer_used += size;
+
+        if (!peer->farming) {
+          if (peer->recv_buffer_used >= sizeof(u32)) {
+            u8 *buffer = peer->recv_buffer;
+            peer->bytes_to_farm = read_u32_be(buffer);
+            peer->farming = true;
+          }
+        }
+
+        if (peer->farming) {
+          if (peer->recv_buffer_used >= peer->bytes_to_farm) {
+            u32 extra_bytes;
+            Message msg;
+            message_deserialize(&peer->arena, peer->recv_buffer,
+                                peer->bytes_to_farm, &msg);
+
+            assert(msg.header.type == MessageType_PEERS_INFO);
+            assert(peer->peer_node_fisrt == 0 && peer->peer_node_last == 0);
+            peer->peer_node_fisrt = msg.peers_info.first;
+            peer->peer_node_last = msg.peers_info.last;
+
+            extra_bytes = peer->recv_buffer_used - peer->bytes_to_farm;
+            memcpy(peer->recv_buffer, peer->recv_buffer + peer->bytes_to_farm,
+                   extra_bytes);
+            peer->recv_buffer_used = extra_bytes;
+            peer->bytes_to_farm = 0;
+            peer->farming = false;
+            peer->state = PeerState_PEERS_INFO_RECIEVE;
+          }
+        }
+      }
+    } else {
+      if (FD_ISSET(peer->stun_socket, &writefds)) {
+        u64 mark;
+        Message msg;
+        mark = peer->arena.used;
+        msg.header.type = MessageType_KEEPALIVE;
+        message_writeto(&peer->arena, peer->stun_socket,
+                        peer->stun_addr->ai_addr, &msg);
+        peer->arena.used = mark;
+        peer->state = PeerState_WAITIN_STUN_RESPONSE;
+      }
+    }
   } break;
   case PeerState_PEERS_INFO_RECIEVE: {
-    /* we got the information of the peer try to connect to all of them */
+    /* TODO: we got the information of the peer try to connect to all of them */
   } break;
   case PeerState_TRYING_TO_CONNECT: {
-    /* we are performing hole punching if needed */
+    /* TODO: we are performing hole punching if needed */
   } break;
   case PeerState_CONNECTED: {
-    /* we where able to connect to all peers */
+    /* TODO: we where able to connect to all peers */
   } break;
   default: {
     assert(!"invalid code path");
@@ -136,6 +217,7 @@ int peer_stun_server_init(Peer *peer) {
 int peer_init(Peer *peer) {
   u64 memory_size;
   u8 *memory;
+  memset(peer, 0, sizeof(*peer));
   memory_size = mb(8);
   memory = (u8 *)malloc(memory_size);
   arena_init(&peer->arena, memory, memory_size);
@@ -166,7 +248,6 @@ int main(void) {
 
   for (;;) {
     peer_process_state(peer);
-    Sleep(1000 * 3);
   }
 
   return 0;

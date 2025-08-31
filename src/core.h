@@ -1,6 +1,8 @@
 #ifndef _CORE_H_
 #define _CORE_H_
 
+#define inline __inline
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,10 +1,8 @@
-#define inline
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#undef inline
-
 #include "core.h"
 #include "message.h"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 typedef struct Peer {
   SOCKET socket;
@@ -192,30 +190,39 @@ int server_process_peers(Server *server) {
 
   if (FD_ISSET(server->stun_socket, &readfds)) {
     s32 size, from_size;
+    u32 mark;
     u8 buffer[64];
+    Message msg;
     struct sockaddr_in from;
     from_size = sizeof(from);
     size = recvfrom(server->stun_socket, (char *)buffer, sizeof(buffer), 0,
                     (struct sockaddr *)&from, &from_size);
-    if (size != 0 && size != SOCKET_ERROR) {
-      u8 *response_buffer;
-      u64 response_size, mark;
-      Message response;
-      /* TODO: pase request message type, stop assuming is stun */
-      mark = server->scratch.used;
-      response.header.type = MessageType_STUN_RESPONSE;
-      response.stun_response.address = ntohl(from.sin_addr.S_un.S_addr);
-      response.stun_response.port = ntohs(from.sin_port);
-      message_serialize(&response, 0, &response_size);
-      response_buffer = (u8 *)arena_alloc(&server->scratch, response_size, 4);
-      message_serialize(&response, response_buffer, &response_size);
-      if (sendto(server->stun_socket, (char *)response_buffer, response_size, 0,
-                 (struct sockaddr *)&from, from_size) == SOCKET_ERROR) {
-        printf("failed to send stun response\n");
-        return 1;
+    mark = server->scratch.used;
+    message_deserialize(&server->scratch, buffer, size, &msg);
+    if (msg.header.type == MessageType_STUN_REQUEST) {
+      if (size != 0 && size != SOCKET_ERROR) {
+        u8 *response_buffer;
+        u64 response_size, mark;
+        Message response;
+        mark = server->scratch.used;
+        response.header.type = MessageType_STUN_RESPONSE;
+        response.stun_response.address = ntohl(from.sin_addr.S_un.S_addr);
+        response.stun_response.port = ntohs(from.sin_port);
+        message_serialize(&response, 0, &response_size);
+        response_buffer = (u8 *)arena_alloc(&server->scratch, response_size, 4);
+        message_serialize(&response, response_buffer, &response_size);
+        if (sendto(server->stun_socket, (char *)response_buffer, response_size,
+                   0, (struct sockaddr *)&from, from_size) == SOCKET_ERROR) {
+          printf("failed to send stun response\n");
+          return 1;
+        }
+        server->scratch.used = mark;
       }
-      server->scratch.used = mark;
+    } else {
+      /* TODO: ingnore keep alive messages */
+      printf("Keep alive message receive\n");
     }
+    server->scratch.used = mark;
   }
 
   if (FD_ISSET(server->listener_socket, &readfds)) {
@@ -365,7 +372,7 @@ int main(void) {
   }
 
   for (;;) {
-    server_dump(server);
+    /* server_dump(server); */
     if (server_process_peers(server) != 0) {
       printf("failed to process peers\n");
       return 1;
