@@ -5,11 +5,7 @@
 #include <ws2tcpip.h>
 
 typedef struct Peer {
-  SOCKET socket;
-  u8 recv_buffer[kb(10)];
-  u32 recv_buffer_used;
-  b32 farming;
-  u32 bytes_to_farm;
+  ConnState conn;
 
   MessageHeader *messages_first;
   MessageHeader *messages_last;
@@ -178,9 +174,9 @@ int server_process_peers(Server *server) {
   FD_SET(server->stun_socket, &readfds);
 
   for (peer = server->peers_first; peer != 0; peer = peer->next) {
-    FD_SET(peer->socket, &readfds);
+    FD_SET(peer->conn.sock, &readfds);
     if (peer->messages_count) {
-      FD_SET(peer->socket, &writefds);
+      FD_SET(peer->conn.sock, &writefds);
     }
   }
 
@@ -229,8 +225,8 @@ int server_process_peers(Server *server) {
   if (FD_ISSET(server->listener_socket, &readfds)) {
     Peer *peer;
     peer = server_peer_alloc(server);
-    peer->socket = accept(server->listener_socket, 0, 0);
-    if (peer->socket == INVALID_SOCKET) {
+    peer->conn.sock = accept(server->listener_socket, 0, 0);
+    if (peer->conn.sock == INVALID_SOCKET) {
       /* TODO: alloc peer after checking the socket error */
       return 1;
     }
@@ -238,106 +234,35 @@ int server_process_peers(Server *server) {
 
   peer = server->peers_first;
   while (peer != 0) {
-    if (FD_ISSET(peer->socket, &writefds)) {
-      u8 *buffer;
-      u64 mark, size;
+    if (FD_ISSET(peer->conn.sock, &writefds)) {
+      u64 mark;
       Message *msg;
       msg = peer_messages_pop(peer);
-      message_serialize(msg, 0, &size);
-      mark = server->arena.used;
-      buffer = arena_alloc(&server->arena, size, 4);
-      message_serialize(msg, buffer, &size);
-      send(peer->socket, (char *)buffer, size, 0);
-      server->arena.used = mark;
+      mark = server->scratch.used;
+      message_write(&server->scratch, &peer->conn, msg);
+      server->scratch.used = mark;
     }
 
-    if (FD_ISSET(peer->socket, &readfds)) {
-      s32 size;
-      size =
-          recv(peer->socket, (char *)peer->recv_buffer + peer->recv_buffer_used,
-               array_len(peer->recv_buffer) - peer->recv_buffer_used, 0);
-      if (size == 0 || size == SOCKET_ERROR) {
+    if (FD_ISSET(peer->conn.sock, &readfds)) {
+      u64 mark;
+      Message msg;
+      mark = server->scratch.used;
+      if (message_read(&server->scratch, &peer->conn, &msg)) {
         Peer *to_free;
         to_free = peer;
         peer = peer->next;
-        closesocket(to_free->socket);
+        closesocket(to_free->conn.sock);
         server_peer_free(server, to_free);
         continue;
       }
-      peer->recv_buffer_used += size;
-
-      if (!peer->farming) {
-        if (peer->recv_buffer_used >= sizeof(u32)) {
-          u8 *buffer = peer->recv_buffer;
-          peer->bytes_to_farm = read_u32_be(buffer);
-          peer->farming = true;
-        }
-      }
-
-      if (peer->farming) {
-        if (peer->recv_buffer_used >= peer->bytes_to_farm) {
-          u32 extra_bytes;
-          u64 mark;
-          Message msg;
-          mark = server->scratch.used;
-          message_deserialize(&server->scratch, peer->recv_buffer,
-                              peer->bytes_to_farm, &msg);
-          server->message_callback(server, &msg);
-          server->scratch.used = mark;
-
-          extra_bytes = peer->recv_buffer_used - peer->bytes_to_farm;
-          memcpy(peer->recv_buffer, peer->recv_buffer + peer->bytes_to_farm,
-                 extra_bytes);
-          peer->recv_buffer_used = extra_bytes;
-          peer->bytes_to_farm = 0;
-          peer->farming = false;
-        }
-      }
+      server->message_callback(server, &msg);
+      server->scratch.used = mark;
     }
 
     peer = peer->next;
   }
 
   return 0;
-}
-
-void server_dump(Server *server) {
-  Peer *peer;
-  Peer *p;
-  MessageHeader *m;
-  u32 free_count;
-  u32 free_msg_count;
-
-  printf("=== Server Dump ===\n");
-  printf("Listener socket: %d\n", (s32)server->listener_socket);
-  printf("Peers count: %u\n", server->peers_count);
-
-  printf("Arena used: %u\n", (u32)server->arena.used);
-  printf("Arena size: %u\n", (u32)server->arena.size);
-  printf("Scratch used: %u\n", (u32)server->scratch.used);
-  printf("Scratch size: %u\n", (u32)server->scratch.size);
-
-  free_count = 0;
-  for (p = server->free_peers; p != 0; p = p->next) {
-    free_count++;
-  }
-  printf("Free peers: %u\n", free_count);
-
-  free_msg_count = 0;
-  for (m = server->free_messages; m != 0; m = m->next) {
-    free_msg_count++;
-  }
-  printf("Free messages: %u\n", free_msg_count);
-
-  printf("--- Active Peers ---\n");
-  for (peer = server->peers_first; peer != 0; peer = peer->next) {
-    printf("Peer socket: %d\n", (s32)peer->socket);
-    printf("  Messages in queue: %u\n", peer->messages_count);
-    printf("  Recv buffer used: %u bytes\n", peer->recv_buffer_used);
-    printf("  Farming: %s\n", peer->farming ? "true" : "false");
-    printf("  Bytes to farm: %u\n", peer->bytes_to_farm);
-  }
-  printf("===================\n");
 }
 
 void message_callback(Server *server, Message *msg) {
@@ -373,7 +298,6 @@ int main(void) {
   }
 
   for (;;) {
-    /* server_dump(server); */
     if (server_process_peers(server) != 0) {
       printf("failed to process peers\n");
       return 1;
