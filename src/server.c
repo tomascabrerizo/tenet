@@ -211,6 +211,7 @@ int server_process_peers(Server *server) {
         message_serialize(&response, 0, &response_size);
         response_buffer = (u8 *)arena_alloc(&server->scratch, response_size, 4);
         message_serialize(&response, response_buffer, &response_size);
+        printf("sending stun response: %llu\n", response_size);
         if (sendto(server->stun_socket, (char *)response_buffer, response_size,
                    0, (struct sockaddr *)&from, from_size) == SOCKET_ERROR) {
           printf("failed to send stun response\n");

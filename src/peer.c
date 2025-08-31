@@ -21,20 +21,16 @@ typedef enum PeerState {
 
 typedef struct Peer {
   Arena arena;
-  SOCKET ctrl_socket;
   SOCKET stun_socket;
-  struct addrinfo *ctrl_addr;
   struct addrinfo *stun_addr;
-  u64 own_address;
-  u16 own_port;
+  ConnState ctrl_conn;
+
   PeerState state;
   PeerInfoNode *peer_node_fisrt;
   PeerInfoNode *peer_node_last;
 
-  u8 recv_buffer[kb(10)];
-  u32 recv_buffer_used;
-  b32 farming;
-  u32 bytes_to_farm;
+  u64 own_address;
+  u16 own_port;
 } Peer;
 
 void peer_process_state(Peer *peer) {
@@ -73,17 +69,10 @@ void peer_process_state(Peer *peer) {
   } break;
   case PeerState_KNOW_ITSELF: {
     Message msg;
-    u8 *buffer;
-    u64 size, mark;
     msg.header.type = MessageType_PEER_CONNECTED;
-    msg.peer_connected.address = 4321;
-    msg.peer_connected.port = 6969;
-    mark = peer->arena.used;
-    message_serialize(&msg, 0, &size);
-    buffer = arena_alloc(&peer->arena, size, 4);
-    message_serialize(&msg, buffer, &size);
-    send(peer->ctrl_socket, (char *)buffer, (s32)size, 0);
-    peer->arena.used = mark;
+    msg.peer_connected.address = peer->own_address;
+    msg.peer_connected.port = peer->own_port;
+    message_write(&peer->arena, &peer->ctrl_conn, &msg);
     peer->state = PeerState_WAITIN_PEERS_INFO;
   } break;
   case PeerState_WAITIN_PEERS_INFO: {
@@ -92,50 +81,20 @@ void peer_process_state(Peer *peer) {
     struct timeval timeout;
     FD_ZERO(&readfds);
     FD_ZERO(&writefds);
-    FD_SET(peer->ctrl_socket, &readfds);
+    FD_SET(peer->ctrl_conn.sock, &readfds);
     FD_SET(peer->stun_socket, &writefds);
     timeout.tv_sec = 1;
     timeout.tv_usec = 0;
     count = select(0, &readfds, 0, 0, &timeout);
     if (count > 0) {
-      if (FD_ISSET(peer->ctrl_socket, &readfds)) {
-        s32 size;
-
-        size = recv(peer->ctrl_socket,
-                    (char *)peer->recv_buffer + peer->recv_buffer_used,
-                    array_len(peer->recv_buffer) - peer->recv_buffer_used, 0);
-        assert(size > 0 && size != SOCKET_ERROR);
-        peer->recv_buffer_used += size;
-
-        if (!peer->farming) {
-          if (peer->recv_buffer_used >= sizeof(u32)) {
-            u8 *buffer = peer->recv_buffer;
-            peer->bytes_to_farm = read_u32_be(buffer);
-            peer->farming = true;
-          }
-        }
-
-        if (peer->farming) {
-          if (peer->recv_buffer_used >= peer->bytes_to_farm) {
-            u32 extra_bytes;
-            Message msg;
-            message_deserialize(&peer->arena, peer->recv_buffer,
-                                peer->bytes_to_farm, &msg);
-
-            assert(msg.header.type == MessageType_PEERS_INFO);
-            assert(peer->peer_node_fisrt == 0 && peer->peer_node_last == 0);
-            peer->peer_node_fisrt = msg.peers_info.first;
-            peer->peer_node_last = msg.peers_info.last;
-
-            extra_bytes = peer->recv_buffer_used - peer->bytes_to_farm;
-            memcpy(peer->recv_buffer, peer->recv_buffer + peer->bytes_to_farm,
-                   extra_bytes);
-            peer->recv_buffer_used = extra_bytes;
-            peer->bytes_to_farm = 0;
-            peer->farming = false;
-            peer->state = PeerState_PEERS_INFO_RECIEVE;
-          }
-        }
+      if (FD_ISSET(peer->ctrl_conn.sock, &readfds)) {
+        Message msg;
+        message_read(&peer->arena, &peer->ctrl_conn, &msg);
+        assert(msg.header.type == MessageType_PEERS_INFO);
+        assert(peer->peer_node_fisrt == 0 && peer->peer_node_last == 0);
+        peer->peer_node_fisrt = msg.peers_info.first;
+        peer->peer_node_last = msg.peers_info.last;
+        peer->state = PeerState_PEERS_INFO_RECIEVE;
       }
     } else {
       if (FD_ISSET(peer->stun_socket, &writefds)) {
@@ -146,7 +105,6 @@ void peer_process_state(Peer *peer) {
         message_writeto(&peer->arena, peer->stun_socket,
                         peer->stun_addr->ai_addr, &msg);
         peer->arena.used = mark;
-        peer->state = PeerState_WAITIN_STUN_RESPONSE;
       }
     }
   } break;
@@ -163,33 +121,6 @@ void peer_process_state(Peer *peer) {
     assert(!"invalid code path");
   }
   }
-}
-
-int peer_ctrl_server_init(Peer *peer) {
-  struct addrinfo hints;
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_protocol = IPPROTO_TCP;
-  if (getaddrinfo(SERVER_ADDRESS, SERVER_PORT, &hints, &peer->ctrl_addr) != 0) {
-    printf("failed to get addess info for server: %s:%s\n", SERVER_ADDRESS,
-           SERVER_PORT);
-    return 1;
-  }
-  peer->ctrl_socket =
-      socket(peer->ctrl_addr->ai_family, peer->ctrl_addr->ai_socktype,
-             peer->ctrl_addr->ai_protocol);
-  if (peer->ctrl_socket == INVALID_SOCKET) {
-    printf("failed to create ctrl socket\n");
-    return 1;
-  }
-  if (connect(peer->ctrl_socket, peer->ctrl_addr->ai_addr,
-              (int)peer->ctrl_addr->ai_addrlen) == SOCKET_ERROR) {
-    printf("failed to connect to server server: %s:%s\n", SERVER_ADDRESS,
-           SERVER_PORT);
-    return 1;
-  }
-  return 0;
 }
 
 int peer_stun_server_init(Peer *peer) {
@@ -221,10 +152,7 @@ int peer_init(Peer *peer) {
   memory_size = mb(8);
   memory = (u8 *)malloc(memory_size);
   arena_init(&peer->arena, memory, memory_size);
-  if (peer_ctrl_server_init(peer) != 0) {
-    printf("failed to initialize control server\n");
-    return 1;
-  }
+  conn_state_init(&peer->ctrl_conn, SERVER_ADDRESS, SERVER_PORT);
   if (peer_stun_server_init(peer) != 0) {
     printf("failed to initialize stun server\n");
     return 1;

@@ -60,9 +60,23 @@ typedef union Message {
   MessagePeersInfo peers_info;
 } Message;
 
+typedef struct ConnState {
+  SOCKET sock;
+  struct addrinfo *addr;
+  u8 recv_buffer[kb(10)];
+  u64 recv_buffer_used;
+  b32 farming;
+  u32 bytes_to_farm;
+} ConnState;
+
+s32 conn_state_init(ConnState *conn, char *address, char *port);
+
+s32 message_read(Arena *arena, ConnState *conn, Message *msg);
+s32 message_write(Arena *arena, ConnState *conn, Message *msg);
+
 s32 message_writeto(Arena *arena, SOCKET sock, struct sockaddr *to,
                     Message *msg);
-s32 message_readfrom(Arena *arena, SOCKET sock, struct sockaddr *to,
+s32 message_readfrom(Arena *arena, SOCKET sock, struct sockaddr *from,
                      Message *msg);
 
 void message_deserialize(Arena *arena, u8 *buffer, u64 size, Message *msg);

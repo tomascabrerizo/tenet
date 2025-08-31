@@ -1,12 +1,44 @@
 #include "message.h"
 
-typedef struct ConnState {
-  SOCKET sock;
-  u8 recv_buffer[kb(10)];
-  u64 recv_buffer_used;
-  b32 farming;
-  u32 bytes_to_farm;
-} ConnState;
+s32 conn_state_init(ConnState *conn, char *address, char *port) {
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+  if (getaddrinfo(address, port, &hints, &conn->addr) != 0) {
+    printf("failed to get addess info for conn: %s:%s\n", address, port);
+    return 1;
+  }
+  conn->sock = socket(conn->addr->ai_family, conn->addr->ai_socktype,
+                      conn->addr->ai_protocol);
+  if (conn->sock == INVALID_SOCKET) {
+    printf("failed to create conn socket\n");
+    return 1;
+  }
+  if (connect(conn->sock, conn->addr->ai_addr, (int)conn->addr->ai_addrlen) ==
+      SOCKET_ERROR) {
+    printf("failed to connect to connect with conn: %s:%s\n", address, port);
+    return 1;
+  }
+  conn->recv_buffer_used = 0;
+  conn->farming = 0;
+  conn->bytes_to_farm = 0;
+  return 0;
+}
+
+s32 message_write(Arena *arena, ConnState *conn, Message *msg) {
+  u64 size, mark;
+  s32 res;
+  u8 *buffer;
+  mark = arena->used;
+  message_serialize(msg, 0, &size);
+  buffer = arena_alloc(arena, size, 4);
+  message_serialize(msg, buffer, &size);
+  res = send(conn->sock, (char *)buffer, (s32)size, 0);
+  arena->used = mark;
+  return res;
+}
 
 s32 message_read(Arena *arena, ConnState *conn, Message *msg) {
   s32 size;
@@ -48,17 +80,23 @@ s32 message_writeto(Arena *arena, SOCKET sock, struct sockaddr *to,
   message_serialize(msg, 0, &size);
   buffer = arena_alloc(arena, size, 4);
   message_serialize(msg, buffer, &size);
-  res = sendto(sock, (char *)buffer, size, 0, to, to_size);
+  res = sendto(sock, (char *)buffer, size, 0, (struct sockaddr *)to, to_size);
   arena->used = mark;
   return res;
 }
 
 s32 message_readfrom(Arena *arena, SOCKET sock, struct sockaddr *from,
                      Message *msg) {
-  s32 size, from_size;
+  s32 size;
   u8 buffer[1024];
-  from_size = sizeof(*from);
-  size = recvfrom(sock, (char *)buffer, sizeof(buffer), 0, from, &from_size);
+  if (from) {
+    s32 from_size;
+    from_size = sizeof(*from);
+    size = recvfrom(sock, (char *)buffer, sizeof(buffer), 0,
+                    (struct sockaddr *)from, &from_size);
+  } else {
+    size = recvfrom(sock, (char *)buffer, sizeof(buffer), 0, 0, 0);
+  }
   message_deserialize(arena, buffer, size, msg);
   return size;
 }
