@@ -152,11 +152,11 @@ int peer_init(Peer *peer) {
   memory_size = mb(8);
   memory = (u8 *)malloc(memory_size);
   arena_init(&peer->arena, memory, memory_size);
-  conn_state_init(&peer->ctrl_conn, SERVER_ADDRESS, SERVER_PORT);
   if (peer_stun_server_init(peer) != 0) {
     printf("failed to initialize stun server\n");
     return 1;
   }
+  conn_state_connect(&peer->ctrl_conn, SERVER_ADDRESS, SERVER_PORT);
   peer->state = PeerState_DONT_KNOW_ITSELF;
   return 0;
 }

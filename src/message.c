@@ -1,6 +1,6 @@
 #include "message.h"
 
-s32 conn_state_init(ConnState *conn, char *address, char *port) {
+s32 conn_state_connect(ConnState *conn, char *address, char *port) {
   struct addrinfo hints;
   memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_INET;

@@ -69,7 +69,7 @@ typedef struct ConnState {
   u32 bytes_to_farm;
 } ConnState;
 
-s32 conn_state_init(ConnState *conn, char *address, char *port);
+s32 conn_state_connect(ConnState *conn, char *address, char *port);
 
 s32 message_read(Arena *arena, ConnState *conn, Message *msg);
 s32 message_write(Arena *arena, ConnState *conn, Message *msg);

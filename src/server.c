@@ -4,6 +4,120 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#define PEERS_MAP_SIZE 1024
+typedef struct PeerInfoBucket {
+  b32 used;
+  u64 hash;
+  u32 address;
+  u16 port;
+  struct PeerInfoBucket *next;
+} PeerInfoBucket;
+
+typedef struct PeerInfoHashMap {
+  PeerInfoBucket buckets[PEERS_MAP_SIZE];
+  PeerInfoBucket *free_first;
+} PeerInfoHashMap;
+
+b32 peer_info_hashmap_has(PeerInfoHashMap *map, u64 hash) {
+  u64 index;
+  PeerInfoBucket *bucket;
+  index = (hash % (u64)PEERS_MAP_SIZE);
+  assert(index < PEERS_MAP_SIZE);
+  bucket = &map->buckets[index];
+  if (bucket->used) {
+    return false;
+  }
+  while (bucket && bucket->hash != hash) {
+    bucket = bucket->next;
+  }
+  return bucket != 0;
+}
+
+void peer_info_hashmap_insert(Arena *arena, PeerInfoHashMap *map, u64 hash,
+                              u32 address, u32 port) {
+  u64 index;
+  PeerInfoBucket *bucket;
+
+  if (peer_info_hashmap_has(map, hash)) {
+    return;
+  }
+
+  index = (hash % (u64)PEERS_MAP_SIZE);
+  assert(index < PEERS_MAP_SIZE);
+  bucket = &map->buckets[index];
+  if (bucket->used) {
+    PeerInfoBucket *new_bucket;
+    if (map->free_first) {
+      new_bucket = map->free_first;
+      map->free_first = map->free_first->next;
+      memset(new_bucket, 0, sizeof(*new_bucket));
+    } else {
+      new_bucket = (PeerInfoBucket *)arena_alloc(arena, sizeof(*new_bucket), 4);
+      memset(new_bucket, 0, sizeof(*new_bucket));
+    }
+    new_bucket->next = bucket->next;
+    bucket->next = new_bucket;
+    bucket = new_bucket;
+  }
+  bucket->used = true;
+  bucket->hash = hash;
+  bucket->address = address;
+  bucket->port = port;
+}
+
+void peer_info_hashmap_remove(PeerInfoHashMap *map, u64 hash) {
+  u64 index;
+  PeerInfoBucket *bucket, *prev_bucket;
+  index = (hash % (u64)PEERS_MAP_SIZE);
+  assert(index < PEERS_MAP_SIZE);
+  bucket = &map->buckets[index];
+  assert(bucket->used);
+  prev_bucket = 0;
+  while (bucket && bucket->hash != hash) {
+    prev_bucket = bucket;
+    bucket = bucket->next;
+  }
+  assert(bucket);
+  if (!prev_bucket) {
+    bucket->used = false;
+  } else {
+    prev_bucket->next = bucket->next;
+    bucket->next = map->free_first;
+    map->free_first = bucket;
+  }
+}
+
+void peer_info_hashmap_get(PeerInfoHashMap *map, u64 hash, u32 *address,
+                           u32 *port) {
+  u64 index;
+  PeerInfoBucket *bucket;
+  index = (hash % (u64)PEERS_MAP_SIZE);
+  assert(index < PEERS_MAP_SIZE);
+  bucket = &map->buckets[index];
+  assert(bucket->used);
+  while (bucket && bucket->hash != hash) {
+    bucket = bucket->next;
+  }
+  assert(bucket);
+  *address = bucket->address;
+  *port = bucket->port;
+}
+
+PeerInfoBucket *peer_info_hashmap_get_bucket(PeerInfoHashMap *map, u64 hash) {
+  u64 index;
+  PeerInfoBucket *bucket;
+  index = (hash % (u64)PEERS_MAP_SIZE);
+  assert(index < PEERS_MAP_SIZE);
+  bucket = &map->buckets[index];
+  if (bucket->used) {
+    return 0;
+  }
+  while (bucket && bucket->hash != hash) {
+    bucket = bucket->next;
+  }
+  return bucket;
+}
+
 typedef struct Peer {
   ConnState conn;
 
@@ -47,11 +161,13 @@ typedef struct Server {
 
   Peer *free_peers;
   MessageHeader *free_messages;
-  void (*message_callback)(struct Server *server, Message *msg);
+  void (*message_callback)(struct Server *server, ConnState *conn,
+                           Message *msg);
 } Server;
 
 int server_init(Server *server,
-                void (*message_callback)(struct Server *server, Message *msg)) {
+                void (*message_callback)(struct Server *server, ConnState *conn,
+                                         Message *msg)) {
   u64 memory_size, scratch_size;
   u8 *memory, *scratch;
 
@@ -255,7 +371,7 @@ int server_process_peers(Server *server) {
         server_peer_free(server, to_free);
         continue;
       }
-      server->message_callback(server, &msg);
+      server->message_callback(server, &peer->conn, &msg);
       server->scratch.used = mark;
     }
 
@@ -265,15 +381,14 @@ int server_process_peers(Server *server) {
   return 0;
 }
 
-void message_callback(Server *server, Message *msg) {
+void message_callback(Server *server, ConnState *conn, Message *msg) {
   switch (msg->header.type) {
   case MessageType_PEER_CONNECTED: {
-    printf("MessagePeerConnected receive: %d:%d\n", msg->peer_connected.address,
-           msg->peer_connected.port);
-  } break;
-  case MessageType_PEERS_INFO: {
-    printf("MessagePeersInfo receive, peers count: %d\n",
-           msg->peers_info.peers_count);
+    MessagePeerConnected *peer_connected = &msg->peer_connected;
+    unused(peer_connected);
+    /* TODO: save the peer public ip and port */
+    /* TODO: send peers info message to the connected peer */
+    unused(peer_connected);
   } break;
   default: {
     assert(!"invalid code path");
