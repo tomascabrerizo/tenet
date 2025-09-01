@@ -1,22 +1,23 @@
 #include "message.h"
 
 s32 conn_state_connect(ConnState *conn, char *address, char *port) {
-  struct addrinfo hints;
+  struct addrinfo hints, *res;
   memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_protocol = IPPROTO_TCP;
-  if (getaddrinfo(address, port, &hints, &conn->addr) != 0) {
+  if (getaddrinfo(address, port, &hints, &res) != 0) {
     printf("failed to get addess info for conn: %s:%s\n", address, port);
     return 1;
   }
-  conn->sock = socket(conn->addr->ai_family, conn->addr->ai_socktype,
-                      conn->addr->ai_protocol);
+  conn->addr = *res->ai_addr;
+  freeaddrinfo(res);
+  conn->sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (conn->sock == INVALID_SOCKET) {
     printf("failed to create conn socket\n");
     return 1;
   }
-  if (connect(conn->sock, conn->addr->ai_addr, (int)conn->addr->ai_addrlen) ==
+  if (connect(conn->sock, &conn->addr, (int)sizeof(conn->addr)) ==
       SOCKET_ERROR) {
     printf("failed to connect to connect with conn: %s:%s\n", address, port);
     return 1;
@@ -177,53 +178,4 @@ void message_serialize(Message *msg, u8 *buffer, u64 *size) {
   }
   }
   *size = total_size;
-}
-
-void message_dump(Message *msg) {
-  switch (msg->header.type) {
-  case MessageType_PEER_INVALID:
-    printf("Message: INVALID\n");
-    break;
-
-  case MessageType_STUN_RESPONSE:
-    printf("Message: STUN_RESPONSE\n");
-    printf("  Address: %u.%u.%u.%u\n",
-           (msg->stun_response.address >> 24) & 0xFF,
-           (msg->stun_response.address >> 16) & 0xFF,
-           (msg->stun_response.address >> 8) & 0xFF,
-           msg->stun_response.address & 0xFF);
-    printf("  Port: %u\n", msg->stun_response.port);
-    break;
-
-  case MessageType_PEER_CONNECTED:
-    printf("Message: PEER_CONNECTED\n");
-    printf("  Address: %u.%u.%u.%u\n",
-           (msg->peer_connected.address >> 24) & 0xFF,
-           (msg->peer_connected.address >> 16) & 0xFF,
-           (msg->peer_connected.address >> 8) & 0xFF,
-           msg->peer_connected.address & 0xFF);
-    printf("  Port: %u\n", msg->peer_connected.port);
-    break;
-
-  case MessageType_PEERS_INFO: {
-    PeerInfoNode *node;
-    printf("Message: PEERS_INFO\n");
-    printf("  Peers count: %u\n", msg->peers_info.peers_count);
-    node = msg->peers_info.first;
-    while (node) {
-      printf("  Peer: %u.%u.%u.%u:%u\n", (node->address >> 24) & 0xFF,
-             (node->address >> 16) & 0xFF, (node->address >> 8) & 0xFF,
-             node->address & 0xFF, node->port);
-      node = node->next;
-    }
-  } break;
-
-  case MessageType_COUNT:
-    printf("Message: COUNT (invalid marker)\n");
-    break;
-
-  default:
-    printf("Message: UNKNOWN TYPE (%d)\n", (int)msg->header.type);
-    break;
-  }
 }

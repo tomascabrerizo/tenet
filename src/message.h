@@ -62,7 +62,7 @@ typedef union Message {
 
 typedef struct ConnState {
   SOCKET sock;
-  struct addrinfo *addr;
+  struct sockaddr addr;
   u8 recv_buffer[kb(10)];
   u64 recv_buffer_used;
   b32 farming;
@@ -81,6 +81,5 @@ s32 message_readfrom(Arena *arena, SOCKET sock, struct sockaddr *from,
 
 void message_deserialize(Arena *arena, u8 *buffer, u64 size, Message *msg);
 void message_serialize(Message *msg, u8 *buffer, u64 *size);
-void message_dump(Message *msg);
 
 #endif

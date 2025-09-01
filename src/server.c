@@ -158,15 +158,15 @@ typedef struct Server {
   Peer *peers_first;
   Peer *peers_last;
   u32 peers_count;
+  PeerInfoHashMap peer_info_map;
 
   Peer *free_peers;
   MessageHeader *free_messages;
-  void (*message_callback)(struct Server *server, ConnState *conn,
-                           Message *msg);
+  void (*message_callback)(struct Server *server, Peer *peer, Message *msg);
 } Server;
 
 int server_init(Server *server,
-                void (*message_callback)(struct Server *server, ConnState *conn,
+                void (*message_callback)(struct Server *server, Peer *peer,
                                          Message *msg)) {
   u64 memory_size, scratch_size;
   u8 *memory, *scratch;
@@ -339,9 +339,12 @@ int server_process_peers(Server *server) {
   }
 
   if (FD_ISSET(server->listener_socket, &readfds)) {
+    s32 addr_len;
     Peer *peer;
+    addr_len = (s32)sizeof(peer->conn.addr);
     peer = server_peer_alloc(server);
-    peer->conn.sock = accept(server->listener_socket, 0, 0);
+    peer->conn.sock =
+        accept(server->listener_socket, &peer->conn.addr, &addr_len);
     if (peer->conn.sock == INVALID_SOCKET) {
       /* TODO: alloc peer after checking the socket error */
       return 1;
@@ -371,7 +374,7 @@ int server_process_peers(Server *server) {
         server_peer_free(server, to_free);
         continue;
       }
-      server->message_callback(server, &peer->conn, &msg);
+      server->message_callback(server, peer, &msg);
       server->scratch.used = mark;
     }
 
@@ -381,14 +384,50 @@ int server_process_peers(Server *server) {
   return 0;
 }
 
-void message_callback(Server *server, ConnState *conn, Message *msg) {
+void conn_parse_address_and_port(ConnState *conn, u32 *address, u16 *port) {
+  *address = ntohl(((struct sockaddr_in *)&conn->addr)->sin_addr.S_un.S_addr);
+  *port = ntohs(((struct sockaddr_in *)&conn->addr)->sin_port);
+}
+
+u64 conn_hash(ConnState *conn) {
+  u32 address;
+  u16 port;
+  u64 hash;
+  conn_parse_address_and_port(conn, &address, &port);
+  hash = (((u64)address) << 32) | (u64)port;
+  return hash;
+}
+
+void message_callback(Server *server, Peer *peer, Message *msg) {
+  Peer *other;
   switch (msg->header.type) {
   case MessageType_PEER_CONNECTED: {
-    MessagePeerConnected *peer_connected = &msg->peer_connected;
-    unused(peer_connected);
-    /* TODO: save the peer public ip and port */
-    /* TODO: send peers info message to the connected peer */
-    unused(peer_connected);
+    u64 hash, mark;
+    MessagePeerConnected *peer_connected;
+    Message send_msg;
+    peer_connected = &msg->peer_connected;
+    hash = conn_hash(&peer->conn);
+    peer_info_hashmap_insert(&server->arena, &server->peer_info_map, hash,
+                             peer_connected->address, peer_connected->port);
+    memset(&send_msg, 0, sizeof(send_msg));
+    send_msg.header.type = MessageType_PEERS_INFO;
+    mark = server->scratch.used;
+    for (other = server->peers_first; other != 0; other = other->next) {
+      u64 other_hash;
+      if (other == peer) {
+        continue;
+      }
+      other_hash = conn_hash(&other->conn);
+      if (peer_info_hashmap_has(&server->peer_info_map, other_hash)) {
+        PeerInfoNode *node;
+        node = (PeerInfoNode *)arena_alloc(&server->scratch, sizeof(*node), 4);
+        conn_parse_address_and_port(&other->conn, &node->address, &node->port);
+        dllist_push_back(send_msg.peers_info.first, send_msg.peers_info.last,
+                         node);
+      }
+    }
+    message_write(&server->scratch, &peer->conn, &send_msg);
+    server->scratch.used = mark;
   } break;
   default: {
     assert(!"invalid code path");
