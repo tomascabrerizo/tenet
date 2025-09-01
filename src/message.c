@@ -1,5 +1,19 @@
 #include "message.h"
 
+void conn_parse_address_and_port(ConnState *conn, u32 *address, u16 *port) {
+  *address = ntohl(((struct sockaddr_in *)&conn->addr)->sin_addr.S_un.S_addr);
+  *port = ntohs(((struct sockaddr_in *)&conn->addr)->sin_port);
+}
+
+u64 conn_hash(ConnState *conn) {
+  u32 address;
+  u16 port;
+  u64 hash;
+  conn_parse_address_and_port(conn, &address, &port);
+  hash = (((u64)address) << 32) | (u64)port;
+  return hash;
+}
+
 s32 conn_state_connect(ConnState *conn, char *address, char *port) {
   struct addrinfo hints, *res;
   memset(&hints, 0, sizeof(hints));
@@ -34,7 +48,7 @@ s32 message_write(Arena *arena, ConnState *conn, Message *msg) {
   u8 *buffer;
   mark = arena->used;
   message_serialize(msg, 0, &size);
-  buffer = arena_alloc(arena, size, 4);
+  buffer = arena_alloc(arena, size, 8);
   message_serialize(msg, buffer, &size);
   res = send(conn->sock, (char *)buffer, (s32)size, 0);
   arena->used = mark;
@@ -79,7 +93,7 @@ s32 message_writeto(Arena *arena, SOCKET sock, struct sockaddr *to,
   to_size = sizeof(*to);
   mark = arena->used;
   message_serialize(msg, 0, &size);
-  buffer = arena_alloc(arena, size, 4);
+  buffer = arena_alloc(arena, size, 8);
   message_serialize(msg, buffer, &size);
   res = sendto(sock, (char *)buffer, size, 0, (struct sockaddr *)to, to_size);
   arena->used = mark;
@@ -129,7 +143,7 @@ void message_deserialize(Arena *arena, u8 *buffer, u64 size, Message *msg) {
     peers_info->last = 0;
     peers_info->peers_count = read_u32_be(buffer);
     for (i = 0; i < peers_info->peers_count; ++i) {
-      PeerInfoNode *node = (PeerInfoNode *)arena_alloc(arena, sizeof(*node), 4);
+      PeerInfoNode *node = (PeerInfoNode *)arena_alloc(arena, sizeof(*node), 8);
       memset(node, 0, sizeof(PeerInfoNode));
       node->address = read_u32_be(buffer);
       node->port = read_u16_be(buffer);

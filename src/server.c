@@ -4,7 +4,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#define PEERS_MAP_SIZE 1024
+#define PEERS_MAP_SIZE 256
 typedef struct PeerInfoBucket {
   b32 used;
   u64 hash;
@@ -37,11 +37,9 @@ void peer_info_hashmap_insert(Arena *arena, PeerInfoHashMap *map, u64 hash,
                               u32 address, u32 port) {
   u64 index;
   PeerInfoBucket *bucket;
-
   if (peer_info_hashmap_has(map, hash)) {
     return;
   }
-
   index = (hash % (u64)PEERS_MAP_SIZE);
   assert(index < PEERS_MAP_SIZE);
   bucket = &map->buckets[index];
@@ -52,7 +50,7 @@ void peer_info_hashmap_insert(Arena *arena, PeerInfoHashMap *map, u64 hash,
       map->free_first = map->free_first->next;
       memset(new_bucket, 0, sizeof(*new_bucket));
     } else {
-      new_bucket = (PeerInfoBucket *)arena_alloc(arena, sizeof(*new_bucket), 4);
+      new_bucket = (PeerInfoBucket *)arena_alloc(arena, sizeof(*new_bucket), 8);
       memset(new_bucket, 0, sizeof(*new_bucket));
     }
     new_bucket->next = bucket->next;
@@ -88,7 +86,7 @@ void peer_info_hashmap_remove(PeerInfoHashMap *map, u64 hash) {
 }
 
 void peer_info_hashmap_get(PeerInfoHashMap *map, u64 hash, u32 *address,
-                           u32 *port) {
+                           u16 *port) {
   u64 index;
   PeerInfoBucket *bucket;
   index = (hash % (u64)PEERS_MAP_SIZE);
@@ -232,7 +230,7 @@ Message *server_message_alloc(Server *server) {
     msg = server->free_messages;
     server->free_messages = server->free_messages->next;
   } else {
-    msg = (MessageHeader *)arena_alloc(&server->arena, sizeof(Message), 4);
+    msg = (MessageHeader *)arena_alloc(&server->arena, sizeof(Message), 8);
   }
   memset(msg, 0, sizeof(Message));
   return (Message *)msg;
@@ -250,7 +248,7 @@ Peer *server_peer_alloc(Server *server) {
     peer = server->free_peers;
     server->free_peers = server->free_peers->next;
   } else {
-    peer = arena_alloc(&server->arena, sizeof(*peer), 4);
+    peer = arena_alloc(&server->arena, sizeof(*peer), 8);
   }
   memset(peer, 0, sizeof(*peer));
 
@@ -321,7 +319,7 @@ int server_process_peers(Server *server) {
         response.stun_response.address = ntohl(from.sin_addr.S_un.S_addr);
         response.stun_response.port = ntohs(from.sin_port);
         message_serialize(&response, 0, &response_size);
-        response_buffer = (u8 *)arena_alloc(&server->scratch, response_size, 4);
+        response_buffer = (u8 *)arena_alloc(&server->scratch, response_size, 8);
         message_serialize(&response, response_buffer, &response_size);
         printf("sending stun response: %llu\n", response_size);
         if (sendto(server->stun_socket, (char *)response_buffer, response_size,
@@ -384,20 +382,6 @@ int server_process_peers(Server *server) {
   return 0;
 }
 
-void conn_parse_address_and_port(ConnState *conn, u32 *address, u16 *port) {
-  *address = ntohl(((struct sockaddr_in *)&conn->addr)->sin_addr.S_un.S_addr);
-  *port = ntohs(((struct sockaddr_in *)&conn->addr)->sin_port);
-}
-
-u64 conn_hash(ConnState *conn) {
-  u32 address;
-  u16 port;
-  u64 hash;
-  conn_parse_address_and_port(conn, &address, &port);
-  hash = (((u64)address) << 32) | (u64)port;
-  return hash;
-}
-
 void message_callback(Server *server, Peer *peer, Message *msg) {
   Peer *other;
   switch (msg->header.type) {
@@ -420,8 +404,9 @@ void message_callback(Server *server, Peer *peer, Message *msg) {
       other_hash = conn_hash(&other->conn);
       if (peer_info_hashmap_has(&server->peer_info_map, other_hash)) {
         PeerInfoNode *node;
-        node = (PeerInfoNode *)arena_alloc(&server->scratch, sizeof(*node), 4);
-        conn_parse_address_and_port(&other->conn, &node->address, &node->port);
+        node = (PeerInfoNode *)arena_alloc(&server->scratch, sizeof(*node), 8);
+        peer_info_hashmap_get(&server->peer_info_map, other_hash,
+                              &node->address, &node->port);
         dllist_push_back(send_msg.peers_info.first, send_msg.peers_info.last,
                          node);
       }

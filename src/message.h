@@ -3,6 +3,7 @@
 
 #include "core.h"
 
+/* TODO: remove this headers from here */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -70,6 +71,8 @@ typedef struct ConnState {
 } ConnState;
 
 s32 conn_state_connect(ConnState *conn, char *address, char *port);
+void conn_parse_address_and_port(ConnState *conn, u32 *address, u16 *port);
+u64 conn_hash(ConnState *conn);
 
 s32 message_read(Arena *arena, ConnState *conn, Message *msg);
 s32 message_write(Arena *arena, ConnState *conn, Message *msg);
