@@ -1,8 +1,13 @@
 #include "message.h"
 
+void sockaddr_parse_address_and_port(struct sockaddr *a, u32 *address,
+                                     u16 *port) {
+  *address = ntohl(((struct sockaddr_in *)a)->sin_addr.S_un.S_addr);
+  *port = ntohs(((struct sockaddr_in *)a)->sin_port);
+}
+
 void conn_parse_address_and_port(ConnState *conn, u32 *address, u16 *port) {
-  *address = ntohl(((struct sockaddr_in *)&conn->addr)->sin_addr.S_un.S_addr);
-  *port = ntohs(((struct sockaddr_in *)&conn->addr)->sin_port);
+  sockaddr_parse_address_and_port(&conn->addr, address, port);
 }
 
 u64 conn_hash(ConnState *conn) {
@@ -123,6 +128,7 @@ void message_deserialize(Arena *arena, u8 *buffer, u64 size, Message *msg) {
   msg->header.type = (MessageType)read_u8_be(buffer);
   switch (msg->header.type) {
   case MessageType_KEEPALIVE:
+  case MessageType_HOLE_PUNCH:
   case MessageType_STUN_REQUEST: {
     /* empty body*/
   } break;
@@ -164,6 +170,7 @@ void message_serialize(Message *msg, u8 *buffer, u64 *size) {
   write_u8_be_or_count(buffer, (u8)msg->header.type, total_size);
   switch (msg->header.type) {
   case MessageType_KEEPALIVE:
+  case MessageType_HOLE_PUNCH:
   case MessageType_STUN_REQUEST: {
     /* empty body*/
   } break;

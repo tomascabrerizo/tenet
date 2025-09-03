@@ -14,10 +14,27 @@ typedef enum PeerState {
   PeerState_KNOW_ITSELF,
   PeerState_WAITIN_PEERS_INFO,
   PeerState_PEERS_INFO_RECIEVE,
-  PeerState_TRYING_TO_CONNECT,
+  PeerState_ONLY_PEER_IN_NETWORK,
   PeerState_CONNECTED,
   PeerState_COUNT
 } PeerState;
+
+typedef enum PeerConnectionState {
+  PeerConnectionState_NOT_CONNECTED,
+  PeerConnectionState_HOLE_PUNCHING,
+  PeerConnectionState_DIRECT_CONNECTION,
+  PeerConnectionState_WAIT_SYN,
+  PeerConnectionState_WAIT_ACK,
+  PeerConnectionState_CONNECTED
+} PeerConnectionState;
+
+typedef struct PeerConnection {
+  PeerConnectionState state;
+  u32 address;
+  u16 port;
+  struct PeerConnection *next;
+  struct PeerConnection *prev;
+} PeerConnection;
 
 typedef struct Peer {
   Arena arena;
@@ -26,12 +43,39 @@ typedef struct Peer {
   ConnState ctrl_conn;
 
   PeerState state;
-  PeerInfoNode *peer_node_fisrt;
-  PeerInfoNode *peer_node_last;
+  PeerConnection *conn_first;
+  PeerConnection *conn_last;
 
   u64 own_address;
   u16 own_port;
 } Peer;
+
+void peer_process_conections(Peer *peer, PeerConnection *peer_conn,
+                             Message *msg) {
+  switch (peer_conn->state) {
+  case PeerConnectionState_NOT_CONNECTED: {
+    /* TODO: if peer and peer_conn came from the same ip try local connections
+     */
+    peer_conn->state = PeerConnectionState_HOLE_PUNCHING;
+  } break;
+  case PeerConnectionState_HOLE_PUNCHING: {
+    /* TODO: check if we reaceive a message from this peer, if we change state
+     * to wait syn else send hole punch message */
+  } break;
+  case PeerConnectionState_DIRECT_CONNECTION: {
+    /* TODO: try to connect to the peer using the local ip address and port */
+  } break;
+  case PeerConnectionState_WAIT_SYN: {
+    /* TODO: send syn message and wait for syn of other peer */
+  } break;
+  case PeerConnectionState_WAIT_ACK: {
+    /* TODO: send ack message and wait for ack of the other peer */
+  } break;
+  case PeerConnectionState_CONNECTED: {
+    /* TODO: the two peers are connected */
+  } break;
+  }
+}
 
 void peer_process_state(Peer *peer) {
   switch (peer->state) {
@@ -77,12 +121,78 @@ void peer_process_state(Peer *peer) {
   } break;
   case PeerState_WAITIN_PEERS_INFO: {
     s32 count;
-    fd_set readfds, writefds;
+    fd_set readfds;
     struct timeval timeout;
     FD_ZERO(&readfds);
-    FD_ZERO(&writefds);
     FD_SET(peer->ctrl_conn.sock, &readfds);
-    FD_SET(peer->stun_socket, &writefds);
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    count = select(0, &readfds, 0, 0, &timeout);
+    if (count > 0) {
+      if (FD_ISSET(peer->ctrl_conn.sock, &readfds)) {
+        PeerInfoNode *info_node;
+        Message msg;
+        message_read(&peer->arena, &peer->ctrl_conn, &msg);
+        assert(msg.header.type == MessageType_PEERS_INFO);
+        for (info_node = msg.peers_info.first; info_node != 0;
+             info_node = info_node->next) {
+          PeerConnection *conn;
+          conn = (PeerConnection *)arena_alloc(&peer->arena, sizeof(*conn), 8);
+          memset(conn, 0, sizeof(*conn));
+          conn->address = info_node->address;
+          conn->port = info_node->port;
+          conn->state = PeerConnectionState_NOT_CONNECTED;
+          dllist_push_back(peer->conn_first, peer->conn_last, conn);
+        }
+        peer->state = PeerState_PEERS_INFO_RECIEVE;
+      }
+    } else {
+      u64 mark;
+      Message msg;
+      mark = peer->arena.used;
+      msg.header.type = MessageType_KEEPALIVE;
+      message_writeto(&peer->arena, peer->stun_socket, peer->stun_addr->ai_addr,
+                      &msg);
+      peer->arena.used = mark;
+    }
+  } break;
+  case PeerState_PEERS_INFO_RECIEVE: {
+    if (!dllist_empty(peer->conn_first, peer->conn_last)) {
+      PeerConnection *other;
+      s32 count;
+      fd_set readfds;
+      struct timeval timeout;
+      FD_ZERO(&readfds);
+      FD_SET(peer->stun_socket, &readfds);
+      timeout.tv_sec = 1;
+      timeout.tv_usec = 0;
+      count = select(0, &readfds, 0, 0, &timeout);
+      for (other = peer->conn_first; other != 0; other = other->next) {
+        if (FD_ISSET(peer->stun_socket, &readfds)) {
+          struct sockaddr from;
+          Message msg;
+          u32 msg_address;
+          u16 msg_port;
+          message_readfrom(&peer->arena, peer->stun_socket, &from, &msg);
+          sockaddr_parse_address_and_port(&from, &msg_address, &msg_port);
+          if (other->address == msg_address && other->port == msg_port) {
+            peer_process_conections(peer, other, &msg);
+          }
+        }
+        if (count == 0) {
+          peer_process_conections(peer, other, 0);
+        }
+      }
+    } else {
+      peer->state = PeerState_ONLY_PEER_IN_NETWORK;
+    }
+  } break;
+  case PeerState_ONLY_PEER_IN_NETWORK: {
+    s32 count;
+    fd_set readfds;
+    struct timeval timeout;
+    FD_ZERO(&readfds);
+    FD_SET(peer->ctrl_conn.sock, &readfds);
     timeout.tv_sec = 1;
     timeout.tv_usec = 0;
     count = select(0, &readfds, 0, 0, &timeout);
@@ -90,29 +200,19 @@ void peer_process_state(Peer *peer) {
       if (FD_ISSET(peer->ctrl_conn.sock, &readfds)) {
         Message msg;
         message_read(&peer->arena, &peer->ctrl_conn, &msg);
-        assert(msg.header.type == MessageType_PEERS_INFO);
-        assert(peer->peer_node_fisrt == 0 && peer->peer_node_last == 0);
-        peer->peer_node_fisrt = msg.peers_info.first;
-        peer->peer_node_last = msg.peers_info.last;
-        peer->state = PeerState_PEERS_INFO_RECIEVE;
+        assert(msg.header.type == MessageType_PEER_CONNECTED);
+        /* TODO: connect to new peer (hole punch if necesary) */
+        peer->state = PeerState_CONNECTED;
       }
     } else {
-      if (FD_ISSET(peer->stun_socket, &writefds)) {
-        u64 mark;
-        Message msg;
-        mark = peer->arena.used;
-        msg.header.type = MessageType_KEEPALIVE;
-        message_writeto(&peer->arena, peer->stun_socket,
-                        peer->stun_addr->ai_addr, &msg);
-        peer->arena.used = mark;
-      }
+      u64 mark;
+      Message msg;
+      mark = peer->arena.used;
+      msg.header.type = MessageType_KEEPALIVE;
+      message_writeto(&peer->arena, peer->stun_socket, peer->stun_addr->ai_addr,
+                      &msg);
+      peer->arena.used = mark;
     }
-  } break;
-  case PeerState_PEERS_INFO_RECIEVE: {
-    /* TODO: we got the information of the peer try to connect to all of them */
-  } break;
-  case PeerState_TRYING_TO_CONNECT: {
-    /* TODO: we are performing hole punching if needed */
   } break;
   case PeerState_CONNECTED: {
     /* TODO: we where able to connect to all peers */

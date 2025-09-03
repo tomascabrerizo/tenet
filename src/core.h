@@ -25,8 +25,8 @@ typedef int s32;
 typedef long long s64;
 
 typedef unsigned int b32;
-#define false 0
-#define true (!(false))
+#define false ((b32)0)
+#define true ((b32)(!(false)))
 
 #define array_len(array) (sizeof((array)) / sizeof((array)[0]))
 #define kb(value) ((value) * 1024ll)
@@ -38,6 +38,8 @@ typedef unsigned int b32;
 
 #define checknull(p) ((p) == 0)
 #define setnull(p) ((p) = 0)
+
+#define dllist_empty(f, l) (checknull(f) && checknull(l))
 
 #define dllist_push_back(f, l, n)                                              \
   (checknull(l)                                                                \

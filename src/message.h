@@ -14,6 +14,7 @@ typedef enum MessageType {
   MessageType_KEEPALIVE,
   MessageType_PEER_CONNECTED,
   MessageType_PEERS_INFO,
+  MessageType_HOLE_PUNCH,
   MessageType_COUNT
 } MessageType;
 
@@ -70,13 +71,15 @@ typedef struct ConnState {
   u32 bytes_to_farm;
 } ConnState;
 
+void sockaddr_parse_address_and_port(struct sockaddr *a, u32 *address,
+                                     u16 *port);
+
 s32 conn_state_connect(ConnState *conn, char *address, char *port);
 void conn_parse_address_and_port(ConnState *conn, u32 *address, u16 *port);
 u64 conn_hash(ConnState *conn);
 
 s32 message_read(Arena *arena, ConnState *conn, Message *msg);
 s32 message_write(Arena *arena, ConnState *conn, Message *msg);
-
 s32 message_writeto(Arena *arena, SOCKET sock, struct sockaddr *to,
                     Message *msg);
 s32 message_readfrom(Arena *arena, SOCKET sock, struct sockaddr *from,

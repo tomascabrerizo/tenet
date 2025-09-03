@@ -21,13 +21,13 @@ typedef struct PeerInfoHashMap {
 b32 peer_info_hashmap_has(PeerInfoHashMap *map, u64 hash) {
   u64 index;
   PeerInfoBucket *bucket;
-  index = (hash % (u64)PEERS_MAP_SIZE);
+  index = (hash % PEERS_MAP_SIZE);
   assert(index < PEERS_MAP_SIZE);
   bucket = &map->buckets[index];
   if (bucket->used) {
     return false;
   }
-  while (bucket && bucket->hash != hash) {
+  while (bucket != 0 && bucket->hash != hash) {
     bucket = bucket->next;
   }
   return bucket != 0;
@@ -40,7 +40,7 @@ void peer_info_hashmap_insert(Arena *arena, PeerInfoHashMap *map, u64 hash,
   if (peer_info_hashmap_has(map, hash)) {
     return;
   }
-  index = (hash % (u64)PEERS_MAP_SIZE);
+  index = (hash % PEERS_MAP_SIZE);
   assert(index < PEERS_MAP_SIZE);
   bucket = &map->buckets[index];
   if (bucket->used) {
@@ -66,7 +66,7 @@ void peer_info_hashmap_insert(Arena *arena, PeerInfoHashMap *map, u64 hash,
 void peer_info_hashmap_remove(PeerInfoHashMap *map, u64 hash) {
   u64 index;
   PeerInfoBucket *bucket, *prev_bucket;
-  index = (hash % (u64)PEERS_MAP_SIZE);
+  index = (hash % PEERS_MAP_SIZE);
   assert(index < PEERS_MAP_SIZE);
   bucket = &map->buckets[index];
   assert(bucket->used);
@@ -89,7 +89,7 @@ void peer_info_hashmap_get(PeerInfoHashMap *map, u64 hash, u32 *address,
                            u16 *port) {
   u64 index;
   PeerInfoBucket *bucket;
-  index = (hash % (u64)PEERS_MAP_SIZE);
+  index = (hash % PEERS_MAP_SIZE);
   assert(index < PEERS_MAP_SIZE);
   bucket = &map->buckets[index];
   assert(bucket->used);
@@ -104,7 +104,7 @@ void peer_info_hashmap_get(PeerInfoHashMap *map, u64 hash, u32 *address,
 PeerInfoBucket *peer_info_hashmap_get_bucket(PeerInfoHashMap *map, u64 hash) {
   u64 index;
   PeerInfoBucket *bucket;
-  index = (hash % (u64)PEERS_MAP_SIZE);
+  index = (hash % PEERS_MAP_SIZE);
   assert(index < PEERS_MAP_SIZE);
   bucket = &map->buckets[index];
   if (bucket->used) {
