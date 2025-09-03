@@ -50,6 +50,14 @@ typedef struct Peer {
   u16 own_port;
 } Peer;
 
+struct sockaddr_in peer_conn_get_sockaddr(PeerConnection *peer_conn) {
+  struct sockaddr_in address;
+  address.sin_family = AF_INET;
+  address.sin_port = htons(peer_conn->port);
+  address.sin_addr.S_un.S_addr = htonl(peer_conn->address);
+  return address;
+}
+
 void peer_process_conections(Peer *peer, PeerConnection *peer_conn,
                              Message *msg) {
   switch (peer_conn->state) {
@@ -59,17 +67,43 @@ void peer_process_conections(Peer *peer, PeerConnection *peer_conn,
     peer_conn->state = PeerConnectionState_HOLE_PUNCHING;
   } break;
   case PeerConnectionState_HOLE_PUNCHING: {
-    /* TODO: check if we reaceive a message from this peer, if we change state
-     * to wait syn else send hole punch message */
+    if (msg) {
+      peer_conn->state = PeerConnectionState_WAIT_SYN;
+    } else {
+      struct sockaddr_in to;
+      Message msg;
+      msg.header.type = MessageType_HOLE_PUNCH;
+      to = peer_conn_get_sockaddr(peer_conn);
+      message_writeto(&peer->arena, peer->stun_socket, (struct sockaddr *)&to,
+                      &msg);
+    }
   } break;
   case PeerConnectionState_DIRECT_CONNECTION: {
     /* TODO: try to connect to the peer using the local ip address and port */
   } break;
   case PeerConnectionState_WAIT_SYN: {
-    /* TODO: send syn message and wait for syn of other peer */
+    if (msg && msg->header.type == MessageType_SYN) {
+      peer_conn->state = PeerConnectionState_WAIT_ACK;
+    } else {
+      struct sockaddr_in to;
+      Message msg;
+      msg.header.type = MessageType_SYN;
+      to = peer_conn_get_sockaddr(peer_conn);
+      message_writeto(&peer->arena, peer->stun_socket, (struct sockaddr *)&to,
+                      &msg);
+    }
   } break;
   case PeerConnectionState_WAIT_ACK: {
-    /* TODO: send ack message and wait for ack of the other peer */
+    if (msg && msg->header.type == MessageType_SYN_ACK) {
+      peer_conn->state = PeerConnectionState_CONNECTED;
+    } else {
+      struct sockaddr_in to;
+      Message msg;
+      msg.header.type = MessageType_SYN_ACK;
+      to = peer_conn_get_sockaddr(peer_conn);
+      message_writeto(&peer->arena, peer->stun_socket, (struct sockaddr *)&to,
+                      &msg);
+    }
   } break;
   case PeerConnectionState_CONNECTED: {
     /* TODO: the two peers are connected */
@@ -164,8 +198,8 @@ void peer_process_state(Peer *peer) {
       struct timeval timeout;
       FD_ZERO(&readfds);
       FD_SET(peer->stun_socket, &readfds);
-      timeout.tv_sec = 1;
-      timeout.tv_usec = 0;
+      timeout.tv_sec = 0;
+      timeout.tv_usec = 200 * 1000;
       count = select(0, &readfds, 0, 0, &timeout);
       for (other = peer->conn_first; other != 0; other = other->next) {
         if (FD_ISSET(peer->stun_socket, &readfds)) {

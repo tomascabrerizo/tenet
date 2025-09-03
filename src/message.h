@@ -15,6 +15,8 @@ typedef enum MessageType {
   MessageType_PEER_CONNECTED,
   MessageType_PEERS_INFO,
   MessageType_HOLE_PUNCH,
+  MessageType_SYN,
+  MessageType_SYN_ACK,
   MessageType_COUNT
 } MessageType;
 

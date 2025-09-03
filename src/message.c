@@ -129,6 +129,8 @@ void message_deserialize(Arena *arena, u8 *buffer, u64 size, Message *msg) {
   switch (msg->header.type) {
   case MessageType_KEEPALIVE:
   case MessageType_HOLE_PUNCH:
+  case MessageType_SYN:
+  case MessageType_SYN_ACK:
   case MessageType_STUN_REQUEST: {
     /* empty body*/
   } break;
@@ -171,6 +173,8 @@ void message_serialize(Message *msg, u8 *buffer, u64 *size) {
   switch (msg->header.type) {
   case MessageType_KEEPALIVE:
   case MessageType_HOLE_PUNCH:
+  case MessageType_SYN:
+  case MessageType_SYN_ACK:
   case MessageType_STUN_REQUEST: {
     /* empty body*/
   } break;
