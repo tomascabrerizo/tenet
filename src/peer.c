@@ -106,7 +106,8 @@ void peer_process_conections(Peer *peer, PeerConnection *peer_conn,
     }
   } break;
   case PeerConnectionState_CONNECTED: {
-    /* TODO: the two peers are connected */
+    /* TODO: Wait for a new peer connection or else just comunicate with other
+     * peers */
   } break;
   }
 }
@@ -232,10 +233,20 @@ void peer_process_state(Peer *peer) {
     count = select(0, &readfds, 0, 0, &timeout);
     if (count > 0) {
       if (FD_ISSET(peer->ctrl_conn.sock, &readfds)) {
+        PeerConnection *conn;
         Message msg;
         message_read(&peer->arena, &peer->ctrl_conn, &msg);
         assert(msg.header.type == MessageType_PEER_CONNECTED);
         /* TODO: connect to new peer (hole punch if necesary) */
+
+        unused(conn);
+        /* conn = (PeerConnection *)arena_alloc(&peer->arena, sizeof(*conn), 8);
+        memset(conn, 0, sizeof(*conn));
+        conn->address = info_node->address;
+        conn->port = info_node->port;
+        conn->state = PeerConnectionState_NOT_CONNECTED;
+        dllist_push_back(peer->conn_first, peer->conn_last, conn); */
+
         peer->state = PeerState_CONNECTED;
       }
     } else {

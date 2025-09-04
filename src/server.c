@@ -25,7 +25,7 @@ b32 peer_info_hashmap_has(PeerInfoHashMap *map, u64 hash) {
   assert(index < PEERS_MAP_SIZE);
   bucket = &map->buckets[index];
   if (bucket->used) {
-    return false;
+    return true;
   }
   while (bucket != 0 && bucket->hash != hash) {
     bucket = bucket->next;
@@ -341,8 +341,8 @@ int server_process_peers(Server *server) {
     Peer *peer;
     addr_len = (s32)sizeof(peer->conn.addr);
     peer = server_peer_alloc(server);
-    peer->conn.sock =
-        accept(server->listener_socket, &peer->conn.addr, &addr_len);
+    peer->conn.sock = accept(server->listener_socket,
+                             (struct sockaddr *)&peer->conn.addr, &addr_len);
     if (peer->conn.sock == INVALID_SOCKET) {
       /* TODO: alloc peer after checking the socket error */
       return 1;
@@ -403,15 +403,22 @@ void message_callback(Server *server, Peer *peer, Message *msg) {
       }
       other_hash = conn_hash(&other->conn);
       if (peer_info_hashmap_has(&server->peer_info_map, other_hash)) {
+        Message msg;
         PeerInfoNode *node;
         node = (PeerInfoNode *)arena_alloc(&server->scratch, sizeof(*node), 8);
         peer_info_hashmap_get(&server->peer_info_map, other_hash,
                               &node->address, &node->port);
         dllist_push_back(send_msg.peers_info.first, send_msg.peers_info.last,
                          node);
+        send_msg.peers_info.peers_count++;
+        msg.header.type = MessageType_PEER_CONNECTED;
+        conn_parse_address_and_port(&peer->conn, &msg.peer_connected.address,
+                                    &msg.peer_connected.port);
+        message_write(&server->scratch, &other->conn, &msg);
       }
     }
     message_write(&server->scratch, &peer->conn, &send_msg);
+
     server->scratch.used = mark;
   } break;
   default: {
