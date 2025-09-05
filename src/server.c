@@ -412,8 +412,9 @@ void message_callback(Server *server, Peer *peer, Message *msg) {
                          node);
         send_msg.peers_info.peers_count++;
         msg.header.type = MessageType_PEER_CONNECTED;
-        conn_parse_address_and_port(&peer->conn, &msg.peer_connected.address,
-                                    &msg.peer_connected.port);
+        sockaddr_parse_address_and_port(&peer->conn.addr,
+                                        &msg.peer_connected.address,
+                                        &msg.peer_connected.port);
         message_write(&server->scratch, &other->conn, &msg);
       }
     }

@@ -66,18 +66,17 @@ typedef union Message {
 
 typedef struct ConnState {
   SOCKET sock;
-  struct sockaddr addr;
+  struct sockaddr_in addr;
   u8 recv_buffer[kb(10)];
   u64 recv_buffer_used;
   b32 farming;
   u32 bytes_to_farm;
 } ConnState;
 
-void sockaddr_parse_address_and_port(struct sockaddr *a, u32 *address,
+void sockaddr_parse_address_and_port(struct sockaddr_in *a, u32 *address,
                                      u16 *port);
 
 s32 conn_state_connect(ConnState *conn, char *address, char *port);
-void conn_parse_address_and_port(ConnState *conn, u32 *address, u16 *port);
 u64 conn_hash(ConnState *conn);
 
 s32 message_read(Arena *arena, ConnState *conn, Message *msg);

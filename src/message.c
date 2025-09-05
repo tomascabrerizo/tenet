@@ -1,49 +1,61 @@
 #include "message.h"
 
-void sockaddr_parse_address_and_port(struct sockaddr *a, u32 *address,
+void sockaddr_parse_address_and_port(struct sockaddr_in *a, u32 *address,
                                      u16 *port) {
-  *address = ntohl(((struct sockaddr_in *)a)->sin_addr.S_un.S_addr);
-  *port = ntohs(((struct sockaddr_in *)a)->sin_port);
-}
-
-void conn_parse_address_and_port(ConnState *conn, u32 *address, u16 *port) {
-  sockaddr_parse_address_and_port(&conn->addr, address, port);
+  *address = ntohl(a->sin_addr.S_un.S_addr);
+  *port = ntohs(a->sin_port);
 }
 
 u64 conn_hash(ConnState *conn) {
   u32 address;
   u16 port;
   u64 hash;
-  conn_parse_address_and_port(conn, &address, &port);
+  sockaddr_parse_address_and_port(&conn->addr, &address, &port);
   hash = (((u64)address) << 32) | (u64)port;
   return hash;
 }
 
 s32 conn_state_connect(ConnState *conn, char *address, char *port) {
-  struct addrinfo hints, *res;
+  struct addrinfo hints, *info, *res;
   memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_protocol = IPPROTO_TCP;
-  if (getaddrinfo(address, port, &hints, &res) != 0) {
+  if (getaddrinfo(address, port, &hints, &info) != 0) {
     printf("failed to get addess info for conn: %s:%s\n", address, port);
     return 1;
   }
-  conn->addr = *res->ai_addr;
-  freeaddrinfo(res);
+
+  for (res = info; res != 0; res = res->ai_next) {
+    if (res->ai_family == AF_INET) {
+      break;
+    }
+  }
+
+  if (!res) {
+    printf("failed to get ipv4 address to connect\n");
+    freeaddrinfo(info);
+    return 1;
+  }
+
   conn->sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (conn->sock == INVALID_SOCKET) {
     printf("failed to create conn socket\n");
+    freeaddrinfo(info);
     return 1;
   }
-  if (connect(conn->sock, &conn->addr, (int)sizeof(conn->addr)) ==
-      SOCKET_ERROR) {
+  if (connect(conn->sock, res->ai_addr, (int)res->ai_addrlen) == SOCKET_ERROR) {
     printf("failed to connect to connect with conn: %s:%s\n", address, port);
+    freeaddrinfo(info);
     return 1;
   }
+
   conn->recv_buffer_used = 0;
   conn->farming = 0;
   conn->bytes_to_farm = 0;
+
+  conn->addr = *((struct sockaddr_in *)res->ai_addr);
+  freeaddrinfo(info);
   return 0;
 }
 

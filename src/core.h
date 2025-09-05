@@ -28,6 +28,14 @@ typedef unsigned int b32;
 #define false ((b32)0)
 #define true ((b32)(!(false)))
 
+#ifndef max
+#define max(a, b) ((a) > (b) ? (a) : (b))
+#endif
+
+#ifndef min
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#endif
+
 #define array_len(array) (sizeof((array)) / sizeof((array)[0]))
 #define kb(value) ((value) * 1024ll)
 #define mb(value) (kb(value) * 1024ll)
