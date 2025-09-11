@@ -5,6 +5,7 @@ typedef struct Peer {
   MessageHeader *messages_first;
   MessageHeader *messages_last;
   u32 timeout;
+  u32 last_activity;
 
   struct Peer *next;
   struct Peer *prev;
@@ -87,7 +88,7 @@ void context_init(Context *ctx) {
   /* Tomi: select sets setup */
   ctx->read = conn_set_create(&ctx->arena);
   ctx->write = conn_set_create(&ctx->arena);
-  ctx->timeout = CONN_INFINITY;
+  ctx->timeout = CONN_TIMEOUT_INFINITY;
   ctx->running = true;
 
   /* Tomi: link list setup */
@@ -95,6 +96,11 @@ void context_init(Context *ctx) {
   ctx->peers_last = 0;
   ctx->peers_first_free = 0;
   ctx->messages_first_free = 0;
+}
+
+void peer_set_timeout(Peer *peer, u32 timeout) {
+  peer->timeout = timeout;
+  peer->last_activity = conn_current_time_ms();
 }
 
 void peer_connect(Context *ctx, Conn conn) {
@@ -107,7 +113,7 @@ void peer_connect(Context *ctx, Conn conn) {
   }
   assert(peer);
   memset(peer, 0, sizeof(*peer));
-  peer->timeout = CONN_INFINITY;
+  peer_set_timeout(peer, CONN_TIMEOUT_INFINITY);
   dllist_push_back(ctx->peers_fist, ctx->peers_last, peer);
 }
 
@@ -136,6 +142,7 @@ int main(void) {
   context_init(ctx);
 
   for (;;) {
+    u32 now;
     Peer *peer;
     if (!ctx->running) {
       break;
@@ -145,12 +152,15 @@ int main(void) {
     conn_set_clear(ctx->write);
     conn_set_add(ctx->read, ctx->ctrl.conn);
     conn_set_add(ctx->read, ctx->stun.conn);
-    ctx->timeout = CONN_INFINITY;
+    ctx->timeout = CONN_TIMEOUT_INFINITY;
 
+    now = conn_current_time_ms();
     for (peer = ctx->peers_fist; peer != 0; peer = peer->next) {
-      ctx->timeout = min(ctx->timeout, peer->timeout);
-      conn_set_add(ctx->read, peer->stream.conn);
+      u32 remaining;
+      remaining = max(peer->timeout - (now - peer->last_activity), 0);
+      ctx->timeout = min(ctx->timeout, remaining);
 
+      conn_set_add(ctx->read, peer->stream.conn);
       if (!dllist_empty(peer->messages_first, peer->messages_last)) {
         conn_set_add(ctx->write, peer->stream.conn);
       }

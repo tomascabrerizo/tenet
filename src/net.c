@@ -1,8 +1,26 @@
 #include "core.h"
 #include "net.h"
 
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+
+static b32 performance_frequency_init = false;
+static LARGE_INTEGER performance_frequency;
+
+u32 conn_current_time_ms(void) {
+  LARGE_INTEGER performance_counter;
+  u32 ms;
+  if (!performance_frequency_init) {
+    QueryPerformanceFrequency(&performance_frequency);
+    performance_frequency_init = true;
+  }
+  QueryPerformanceCounter(&performance_counter);
+  ms = (u32)((performance_counter.QuadPart * 1000) /
+             performance_frequency.QuadPart);
+  return ms;
+}
 
 typedef struct ConnAddr {
   struct sockaddr_in addr_in;

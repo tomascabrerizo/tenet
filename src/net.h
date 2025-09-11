@@ -7,8 +7,7 @@ typedef u64 Conn;
 typedef struct ConnAddr ConnAddr;
 typedef struct ConnSet ConnSet;
 
-#define CONN_INFINITY ((u32) - 1)
-
+#define CONN_TIMEOUT_INFINITY ((u32) - 1)
 #define CONN_INVALID ((u32) - 1)
 #define CONN_ERROR ((u32)1)
 #define CONN_OK ((u32)0)
@@ -42,6 +41,8 @@ u32 conn_read(Conn conn, u8 *buffer, u32 size);
 u32 conn_write(Conn conn, u8 *buffer, u32 size);
 u32 conn_read_from(Conn conn, u8 *buffer, u32 size, struct ConnAddr *from);
 u32 conn_write_to(Conn conn, u8 *buffer, u32 size, struct ConnAddr *to);
+
+u32 conn_current_time_ms(void);
 
 void conn_close(Conn conn);
 
