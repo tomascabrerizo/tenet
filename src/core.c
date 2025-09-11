@@ -6,7 +6,7 @@ void arena_init(Arena *arena, u8 *data, u64 size) {
   arena->used = 0;
 }
 
-void *arena_alloc(Arena *arena, u64 size, u32 align) {
+void *arena_push(Arena *arena, u64 size, u32 align) {
   u64 address, align_address;
   u64 a, total_size;
 

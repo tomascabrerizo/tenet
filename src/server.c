@@ -1,454 +1,177 @@
-#include "core.h"
-#include "message.h"
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
-#define PEERS_MAP_SIZE 256
-typedef struct PeerInfoBucket {
-  b32 used;
-  u64 hash;
-  u32 address;
-  u16 port;
-  struct PeerInfoBucket *next;
-} PeerInfoBucket;
-
-typedef struct PeerInfoHashMap {
-  PeerInfoBucket buckets[PEERS_MAP_SIZE];
-  PeerInfoBucket *free_first;
-} PeerInfoHashMap;
-
-b32 peer_info_hashmap_has(PeerInfoHashMap *map, u64 hash) {
-  u64 index;
-  PeerInfoBucket *bucket;
-  index = (hash % PEERS_MAP_SIZE);
-  assert(index < PEERS_MAP_SIZE);
-  bucket = &map->buckets[index];
-  if (bucket->used) {
-    return true;
-  }
-  while (bucket != 0 && bucket->hash != hash) {
-    bucket = bucket->next;
-  }
-  return bucket != 0;
-}
-
-void peer_info_hashmap_insert(Arena *arena, PeerInfoHashMap *map, u64 hash,
-                              u32 address, u32 port) {
-  u64 index;
-  PeerInfoBucket *bucket;
-  if (peer_info_hashmap_has(map, hash)) {
-    return;
-  }
-  index = (hash % PEERS_MAP_SIZE);
-  assert(index < PEERS_MAP_SIZE);
-  bucket = &map->buckets[index];
-  if (bucket->used) {
-    PeerInfoBucket *new_bucket;
-    if (map->free_first) {
-      new_bucket = map->free_first;
-      map->free_first = map->free_first->next;
-      memset(new_bucket, 0, sizeof(*new_bucket));
-    } else {
-      new_bucket = (PeerInfoBucket *)arena_alloc(arena, sizeof(*new_bucket), 8);
-      memset(new_bucket, 0, sizeof(*new_bucket));
-    }
-    new_bucket->next = bucket->next;
-    bucket->next = new_bucket;
-    bucket = new_bucket;
-  }
-  bucket->used = true;
-  bucket->hash = hash;
-  bucket->address = address;
-  bucket->port = port;
-}
-
-void peer_info_hashmap_remove(PeerInfoHashMap *map, u64 hash) {
-  u64 index;
-  PeerInfoBucket *bucket, *prev_bucket;
-  index = (hash % PEERS_MAP_SIZE);
-  assert(index < PEERS_MAP_SIZE);
-  bucket = &map->buckets[index];
-  assert(bucket->used);
-  prev_bucket = 0;
-  while (bucket && bucket->hash != hash) {
-    prev_bucket = bucket;
-    bucket = bucket->next;
-  }
-  assert(bucket);
-  if (!prev_bucket) {
-    bucket->used = false;
-  } else {
-    prev_bucket->next = bucket->next;
-    bucket->next = map->free_first;
-    map->free_first = bucket;
-  }
-}
-
-void peer_info_hashmap_get(PeerInfoHashMap *map, u64 hash, u32 *address,
-                           u16 *port) {
-  u64 index;
-  PeerInfoBucket *bucket;
-  index = (hash % PEERS_MAP_SIZE);
-  assert(index < PEERS_MAP_SIZE);
-  bucket = &map->buckets[index];
-  assert(bucket->used);
-  while (bucket && bucket->hash != hash) {
-    bucket = bucket->next;
-  }
-  assert(bucket);
-  *address = bucket->address;
-  *port = bucket->port;
-}
-
-PeerInfoBucket *peer_info_hashmap_get_bucket(PeerInfoHashMap *map, u64 hash) {
-  u64 index;
-  PeerInfoBucket *bucket;
-  index = (hash % PEERS_MAP_SIZE);
-  assert(index < PEERS_MAP_SIZE);
-  bucket = &map->buckets[index];
-  if (bucket->used) {
-    return 0;
-  }
-  while (bucket && bucket->hash != hash) {
-    bucket = bucket->next;
-  }
-  return bucket;
-}
+#include "proto.h"
 
 typedef struct Peer {
-  ConnState conn;
-
+  Stream stream;
   MessageHeader *messages_first;
   MessageHeader *messages_last;
-  u32 messages_count;
+  u32 timeout;
 
   struct Peer *next;
   struct Peer *prev;
 } Peer;
 
-Message *peer_messages_pop(Peer *peer) {
-  MessageHeader *msg;
-  msg = peer->messages_first;
-  if (msg) {
-    dllist_remove(peer->messages_first, peer->messages_last, msg);
-    --peer->messages_count;
-    msg->next = 0;
-    msg->prev = 0;
-    return (Message *)msg;
-  }
-  return 0;
-}
-
-#define SERVER_LISTENER_PORT 8080
-#define SERVER_STUN_PORT 8081
-
-typedef struct Server {
+typedef struct Context {
   Arena arena;
-  Arena scratch;
+  Arena event_arena;
 
-  struct sockaddr_in stun_addr;
-  SOCKET stun_socket;
+  Stream ctrl;
+  Dgram stun;
 
-  struct sockaddr_in listener_addr;
-  SOCKET listener_socket;
+  ConnAddr *ctrl_addr;
+  ConnAddr *stun_addr;
 
-  Peer *peers_first;
+  ConnSet *read;
+  ConnSet *write;
+
+  Peer *peers_fist;
   Peer *peers_last;
-  u32 peers_count;
-  PeerInfoHashMap peer_info_map;
 
-  Peer *free_peers;
-  MessageHeader *free_messages;
-  void (*message_callback)(struct Server *server, Peer *peer, Message *msg);
-} Server;
+  Peer *peers_first_free;
+  MessageHeader *messages_first_free;
 
-int server_init(Server *server,
-                void (*message_callback)(struct Server *server, Peer *peer,
-                                         Message *msg)) {
-  u64 memory_size, scratch_size;
-  u8 *memory, *scratch;
+  u32 timeout;
+  b32 running;
+} Context;
 
-  memset(server, 0, sizeof(*server));
-  memory_size = mb(64);
-  memory = (u8 *)malloc(memory_size);
-  arena_init(&server->arena, memory, memory_size);
-
-  scratch_size = mb(8);
-  scratch = (u8 *)malloc(scratch_size);
-  arena_init(&server->scratch, scratch, scratch_size);
-
-  server->message_callback = message_callback;
-
-  {
-    server->listener_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (server->listener_socket == INVALID_SOCKET) {
-      printf("failed to create listener socket\n");
-      return 1;
-    }
-
-    server->listener_addr.sin_family = AF_INET;
-    server->listener_addr.sin_addr.s_addr = INADDR_ANY;
-    server->listener_addr.sin_port = htons(SERVER_LISTENER_PORT);
-
-    if (bind(server->listener_socket, (struct sockaddr *)&server->listener_addr,
-             sizeof(server->listener_addr)) == SOCKET_ERROR) {
-      printf("failed to bind listener socketn\n");
-      return 1;
-    }
-
-    if (listen(server->listener_socket, SOMAXCONN) == SOCKET_ERROR) {
-      printf("failed to listen for connections\n");
-      return 1;
-    }
+b32 ctrl_server_init(Stream *ctrl, ConnAddr *addr) {
+  ConnErr tcp;
+  tcp = conn_tcp();
+  if (tcp.err == CONN_ERROR) {
+    return false;
   }
-
-  {
-    server->stun_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (server->stun_socket == INVALID_SOCKET) {
-      printf("failed to create stun socket\n");
-      return 1;
-    }
-
-    server->stun_addr.sin_family = AF_INET;
-    server->stun_addr.sin_addr.s_addr = INADDR_ANY;
-    server->stun_addr.sin_port = htons(SERVER_STUN_PORT);
-
-    if (bind(server->stun_socket, (struct sockaddr *)&server->stun_addr,
-             sizeof(server->stun_addr)) == SOCKET_ERROR) {
-      printf("failed to bind stun socketn\n");
-      return 1;
-    }
+  ctrl->conn = tcp.conn;
+  ctrl->recv_buffer_used = 0;
+  ctrl->bytes_to_farm = 0;
+  ctrl->farming = false;
+  if (conn_bind(ctrl->conn, addr) == CONN_ERROR) {
+    return false;
   }
-
-  return 0;
+  if (conn_listen(ctrl->conn) == CONN_ERROR) {
+    return false;
+  }
+  return true;
 }
 
-Message *server_message_alloc(Server *server) {
-  MessageHeader *msg;
-  if (server->free_messages) {
-    msg = server->free_messages;
-    server->free_messages = server->free_messages->next;
-  } else {
-    msg = (MessageHeader *)arena_alloc(&server->arena, sizeof(Message), 8);
+b32 stun_server_init(Dgram *stun, ConnAddr *addr) {
+  ConnErr udp;
+  udp = conn_udp();
+  if (udp.err == CONN_ERROR) {
+    return false;
   }
-  memset(msg, 0, sizeof(Message));
-  return (Message *)msg;
+  stun->conn = udp.conn;
+  if (conn_bind(stun->conn, addr) == CONN_ERROR) {
+    return false;
+  }
+  return true;
 }
 
-void server_message_free(Server *server, Message *msg) {
-  msg->header.next = server->free_messages;
-  msg->header.prev = 0;
-  server->free_messages = &msg->header;
+#define SERVER_ADDRESS "192.168.100.197"
+#define CTRL_PORT 8080
+#define STUN_PORT 8081
+
+#define DEFAULT_ARENAS_SIZE mb(10)
+
+void context_init(Context *ctx) {
+  /* Tomi: arenas setup */
+  arena_init(&ctx->arena, (u8 *)malloc(DEFAULT_ARENAS_SIZE),
+             DEFAULT_ARENAS_SIZE);
+  arena_init(&ctx->event_arena, (u8 *)malloc(DEFAULT_ARENAS_SIZE),
+             DEFAULT_ARENAS_SIZE);
+
+  /* Tomi: ctrl server setup */
+  ctx->ctrl_addr = conn_address(&ctx->arena, SERVER_ADDRESS, CTRL_PORT);
+  assert(ctrl_server_init(&ctx->ctrl, ctx->ctrl_addr));
+  /* Tomi: stun server setup */
+  ctx->stun_addr = conn_address(&ctx->arena, SERVER_ADDRESS, STUN_PORT);
+  assert(stun_server_init(&ctx->stun, ctx->stun_addr));
+  /* Tomi: select sets setup */
+  ctx->read = conn_set_create(&ctx->arena);
+  ctx->write = conn_set_create(&ctx->arena);
+  ctx->timeout = CONN_INFINITY;
+  ctx->running = true;
+
+  /* Tomi: link list setup */
+  ctx->peers_fist = 0;
+  ctx->peers_last = 0;
+  ctx->peers_first_free = 0;
+  ctx->messages_first_free = 0;
 }
 
-Peer *server_peer_alloc(Server *server) {
+void peer_connect(Context *ctx, Conn conn) {
   Peer *peer;
-  if (server->free_peers) {
-    peer = server->free_peers;
-    server->free_peers = server->free_peers->next;
+  if (ctx->peers_first_free) {
+    peer = ctx->peers_first_free;
+    ctx->peers_first_free = ctx->peers_first_free->next;
   } else {
-    peer = arena_alloc(&server->arena, sizeof(*peer), 8);
+    peer = arena_push(&ctx->arena, sizeof(*peer), 8);
   }
+  assert(peer);
   memset(peer, 0, sizeof(*peer));
-
-  dllist_push_back(server->peers_first, server->peers_last, peer);
-  server->peers_count++;
-
-  return peer;
+  peer->timeout = CONN_INFINITY;
+  dllist_push_back(ctx->peers_fist, ctx->peers_last, peer);
 }
 
-void server_peer_free(Server *server, Peer *peer) {
+void peer_disconect(Context *ctx, Peer *peer) {
   MessageHeader *msg;
-  assert(server->peers_count > 0);
-
+  conn_close(peer->stream.conn);
   msg = peer->messages_first;
   while (msg != 0) {
     MessageHeader *to_free;
     to_free = msg;
     msg = msg->next;
-    server_message_free(server, (Message *)to_free);
+    dllist_remove(peer->messages_first, peer->messages_last, to_free);
+    to_free->next = ctx->messages_first_free;
+    ctx->messages_first_free = to_free;
   }
-
-  dllist_remove(server->peers_first, server->peers_last, peer);
-  server->peers_count--;
-
-  peer->next = server->free_peers;
-  peer->prev = 0;
-  server->free_peers = peer;
-}
-
-int server_process_peers(Server *server) {
-  fd_set readfds, writefds;
-  Peer *peer;
-
-  FD_ZERO(&writefds);
-  FD_ZERO(&readfds);
-  FD_SET(server->listener_socket, &readfds);
-  FD_SET(server->stun_socket, &readfds);
-
-  for (peer = server->peers_first; peer != 0; peer = peer->next) {
-    FD_SET(peer->conn.sock, &readfds);
-    if (peer->messages_count) {
-      FD_SET(peer->conn.sock, &writefds);
-    }
-  }
-
-  if (select(0, &readfds, &writefds, 0, 0) == SOCKET_ERROR) {
-    return 1;
-  }
-
-  if (FD_ISSET(server->stun_socket, &readfds)) {
-    s32 size, from_size;
-    u32 mark;
-    u8 buffer[64];
-    Message msg;
-    struct sockaddr_in from;
-    from_size = sizeof(from);
-    size = recvfrom(server->stun_socket, (char *)buffer, sizeof(buffer), 0,
-                    (struct sockaddr *)&from, &from_size);
-    mark = server->scratch.used;
-    message_deserialize(&server->scratch, buffer, size, &msg);
-    if (msg.header.type == MessageType_STUN_REQUEST) {
-      if (size != 0 && size != SOCKET_ERROR) {
-        u8 *response_buffer;
-        u64 response_size, mark;
-        Message response;
-        mark = server->scratch.used;
-        response.header.type = MessageType_STUN_RESPONSE;
-        response.stun_response.address = ntohl(from.sin_addr.S_un.S_addr);
-        response.stun_response.port = ntohs(from.sin_port);
-        message_serialize(&response, 0, &response_size);
-        response_buffer = (u8 *)arena_alloc(&server->scratch, response_size, 8);
-        message_serialize(&response, response_buffer, &response_size);
-        printf("sending stun response: %llu\n", response_size);
-        if (sendto(server->stun_socket, (char *)response_buffer, response_size,
-                   0, (struct sockaddr *)&from, from_size) == SOCKET_ERROR) {
-          printf("failed to send stun response\n");
-          return 1;
-        }
-        server->scratch.used = mark;
-      }
-    } else {
-      /* TODO: ingnore keep alive messages */
-      printf("Keep alive message receive\n");
-    }
-    server->scratch.used = mark;
-  }
-
-  if (FD_ISSET(server->listener_socket, &readfds)) {
-    s32 addr_len;
-    Peer *peer;
-    addr_len = (s32)sizeof(peer->conn.addr);
-    peer = server_peer_alloc(server);
-    peer->conn.sock = accept(server->listener_socket,
-                             (struct sockaddr *)&peer->conn.addr, &addr_len);
-    if (peer->conn.sock == INVALID_SOCKET) {
-      /* TODO: alloc peer after checking the socket error */
-      return 1;
-    }
-  }
-
-  peer = server->peers_first;
-  while (peer != 0) {
-    if (FD_ISSET(peer->conn.sock, &writefds)) {
-      u64 mark;
-      Message *msg;
-      msg = peer_messages_pop(peer);
-      mark = server->scratch.used;
-      message_write(&server->scratch, &peer->conn, msg);
-      server->scratch.used = mark;
-    }
-
-    if (FD_ISSET(peer->conn.sock, &readfds)) {
-      u64 mark;
-      Message msg;
-      mark = server->scratch.used;
-      if (message_read(&server->scratch, &peer->conn, &msg)) {
-        Peer *to_free;
-        to_free = peer;
-        peer = peer->next;
-        closesocket(to_free->conn.sock);
-        server_peer_free(server, to_free);
-        continue;
-      }
-      server->message_callback(server, peer, &msg);
-      server->scratch.used = mark;
-    }
-
-    peer = peer->next;
-  }
-
-  return 0;
-}
-
-void message_callback(Server *server, Peer *peer, Message *msg) {
-  Peer *other;
-  switch (msg->header.type) {
-  case MessageType_PEER_CONNECTED: {
-    u64 hash, mark;
-    MessagePeerConnected *peer_connected;
-    Message send_msg;
-    peer_connected = &msg->peer_connected;
-    hash = conn_hash(&peer->conn);
-    peer_info_hashmap_insert(&server->arena, &server->peer_info_map, hash,
-                             peer_connected->address, peer_connected->port);
-    memset(&send_msg, 0, sizeof(send_msg));
-    send_msg.header.type = MessageType_PEERS_INFO;
-    mark = server->scratch.used;
-    for (other = server->peers_first; other != 0; other = other->next) {
-      u64 other_hash;
-      if (other == peer) {
-        continue;
-      }
-      other_hash = conn_hash(&other->conn);
-      if (peer_info_hashmap_has(&server->peer_info_map, other_hash)) {
-        Message msg;
-        PeerInfoNode *node;
-        node = (PeerInfoNode *)arena_alloc(&server->scratch, sizeof(*node), 8);
-        peer_info_hashmap_get(&server->peer_info_map, other_hash,
-                              &node->address, &node->port);
-        dllist_push_back(send_msg.peers_info.first, send_msg.peers_info.last,
-                         node);
-        send_msg.peers_info.peers_count++;
-        msg.header.type = MessageType_PEER_CONNECTED;
-        sockaddr_parse_address_and_port(&peer->conn.addr,
-                                        &msg.peer_connected.address,
-                                        &msg.peer_connected.port);
-        message_write(&server->scratch, &other->conn, &msg);
-      }
-    }
-    message_write(&server->scratch, &peer->conn, &send_msg);
-
-    server->scratch.used = mark;
-  } break;
-  default: {
-    assert(!"invalid code path");
-  }
-  }
+  dllist_remove(ctx->peers_fist, ctx->peers_last, peer);
+  peer->next = ctx->peers_first_free;
+  ctx->peers_first_free = peer;
 }
 
 int main(void) {
-  static Server static_server;
-  WSADATA wsa_data;
-  Server *server;
+  static Context _context;
+  Context *ctx = &_context;
 
-  if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
-    printf("failed to startup windows wsa\n");
-    return 1;
-  }
-
-  server = &static_server;
-  if (server_init(server, message_callback) != 0) {
-    printf("failed to initialize server\n");
-    return 1;
-  }
+  conn_init();
+  context_init(ctx);
 
   for (;;) {
-    if (server_process_peers(server) != 0) {
-      printf("failed to process peers\n");
-      return 1;
+    Peer *peer;
+    if (!ctx->running) {
+      break;
     }
+
+    conn_set_clear(ctx->read);
+    conn_set_clear(ctx->write);
+    conn_set_add(ctx->read, ctx->ctrl.conn);
+    conn_set_add(ctx->read, ctx->stun.conn);
+    ctx->timeout = CONN_INFINITY;
+
+    for (peer = ctx->peers_fist; peer != 0; peer = peer->next) {
+      ctx->timeout = min(ctx->timeout, peer->timeout);
+      conn_set_add(ctx->read, peer->stream.conn);
+
+      if (!dllist_empty(peer->messages_first, peer->messages_last)) {
+        conn_set_add(ctx->write, peer->stream.conn);
+      }
+    }
+
+    conn_select(ctx->read, ctx->write, ctx->timeout);
+
+    if (conn_set_has(ctx->read, ctx->ctrl.conn)) {
+      ConnErr other;
+      other = conn_accept(ctx->ctrl.conn, 0);
+      if (other.err == CONN_OK) {
+        peer_connect(ctx, other.conn);
+      }
+    }
+
+    for (peer = ctx->peers_fist; peer != 0; peer = peer->next) {
+      if (conn_set_has(ctx->read, peer->stream.conn)) {
+      }
+    }
+
+    ctx->event_arena.used = 0;
   }
 
   return 0;

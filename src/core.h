@@ -59,60 +59,6 @@ typedef unsigned int b32;
    (checknull((n)->prev) ? (0) : ((n)->prev->next = (n)->next)),               \
    (checknull((n)->next) ? (0) : ((n)->next->prev = (n)->prev)))
 
-#define write_u8_be(buffer, value)                                             \
-  ((u8 *)(buffer))[0] = (u8)((value >> 0) & 0xff);                             \
-  (buffer) = ((u8 *)(buffer)) + 1
-
-#define write_u16_be(buffer, value)                                            \
-  ((u8 *)(buffer))[0] = (u8)((value >> 8) & 0xff);                             \
-  ((u8 *)(buffer))[1] = (u8)((value >> 0) & 0xff);                             \
-  (buffer) = ((u8 *)(buffer)) + 2
-
-#define write_u32_be(buffer, value)                                            \
-  ((u8 *)(buffer))[0] = (u8)((value >> 24) & 0xff);                            \
-  ((u8 *)(buffer))[1] = (u8)((value >> 16) & 0xff);                            \
-  ((u8 *)(buffer))[2] = (u8)((value >> 8) & 0xff);                             \
-  ((u8 *)(buffer))[3] = (u8)((value >> 0) & 0xff);                             \
-  (buffer) = ((u8 *)(buffer)) + 4
-
-/* TODO: maybe this macros can return the used size */
-#define write_u8_be_or_count(buffer, value, size)                              \
-  do {                                                                         \
-    if (buffer) {                                                              \
-      write_u8_be(buffer, value);                                              \
-    }                                                                          \
-    size += 1;                                                                 \
-  } while (0)
-
-#define write_u16_be_or_count(buffer, value, size)                             \
-  do {                                                                         \
-    if (buffer) {                                                              \
-      write_u16_be(buffer, value);                                             \
-    }                                                                          \
-    size += 2;                                                                 \
-  } while (0)
-
-#define write_u32_be_or_count(buffer, value, size)                             \
-  do {                                                                         \
-    if (buffer) {                                                              \
-      write_u32_be(buffer, value);                                             \
-    }                                                                          \
-    size += 4;                                                                 \
-  } while (0)
-
-#define read_u32_be(buffer)                                                    \
-  (u32)(((u8 *)(buffer))[0] << 24) | (u32)(((u8 *)(buffer))[1] << 16) |        \
-      (u32)(((u8 *)(buffer))[2] << 8) | (u32)(((u8 *)(buffer))[3] << 0);       \
-  (buffer) += 4
-
-#define read_u16_be(buffer)                                                    \
-  (u16)((u16)(((u8 *)(buffer))[0] << 8) | (u16)(((u8 *)(buffer))[1] << 0));    \
-  (buffer) += 2
-
-#define read_u8_be(buffer)                                                     \
-  (u8)(((u8 *)(buffer))[0]);                                                   \
-  (buffer) += 1
-
 typedef struct Arena {
   u8 *data;
   u64 used;
@@ -120,6 +66,6 @@ typedef struct Arena {
 } Arena;
 
 void arena_init(Arena *arena, u8 *data, u64 size);
-void *arena_alloc(Arena *arena, u64 size, u32 align);
+void *arena_push(Arena *arena, u64 size, u32 align);
 
 #endif
