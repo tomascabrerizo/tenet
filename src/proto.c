@@ -51,7 +51,7 @@ void message_serialize_internal(Message *msg, u8 *buffer, u64 *size) {
   *size = total_size;
 }
 
-b32 stream_message_write(Arena *arena, Stream *stream, Message *msg) {
+u32 stream_message_write(Arena *arena, Stream *stream, Message *msg) {
   u64 size;
   s32 total_sent;
   u8 *buffer;
@@ -61,16 +61,16 @@ b32 stream_message_write(Arena *arena, Stream *stream, Message *msg) {
   while (total_sent < (u32)size) {
     s32 sent =
         conn_write(stream->conn, buffer + total_sent, (s32)size - total_sent);
-    if (sent <= 0) {
-      return false;
+    if (sent == CONN_ERROR) {
+      return CONN_ERROR;
     }
     total_sent += sent;
   }
-  return true;
+  return CONN_OK;
 }
 
-void stream_proccess_messages(Arena *arena, Stream *stream,
-                              MessageCallback callback) {
+u32 stream_proccess_messages(Arena *arena, Stream *stream,
+                             MessageCallback callback, void *param) {
   s32 size;
   u8 *recv_buffer_pos;
   u32 recv_buffer_size;
@@ -78,8 +78,8 @@ void stream_proccess_messages(Arena *arena, Stream *stream,
   recv_buffer_pos = stream->recv_buffer + stream->recv_buffer_used;
   recv_buffer_size = array_len(stream->recv_buffer) - stream->recv_buffer_used;
   size = conn_read(stream->conn, recv_buffer_pos, recv_buffer_size);
-  if (size <= 0) {
-    return;
+  if (size == CONN_ERROR) {
+    return CONN_ERROR;
   }
   stream->recv_buffer_used += size;
 
@@ -104,7 +104,7 @@ void stream_proccess_messages(Arena *arena, Stream *stream,
       msg = message_deserialize(arena, stream->recv_buffer,
                                 stream->bytes_to_farm);
       if (callback) {
-        callback(stream, msg, 0);
+        callback(stream, msg, param);
       }
       extra_bytes = stream->recv_buffer_used - stream->bytes_to_farm;
       memcpy(stream->recv_buffer, stream->recv_buffer + stream->bytes_to_farm,
@@ -114,9 +114,10 @@ void stream_proccess_messages(Arena *arena, Stream *stream,
       stream->farming = false;
     }
   }
+  return CONN_OK;
 }
 
-b32 dgram_message_write_to(Arena *arena, Dgram *dgram, Message *msg,
+u32 dgram_message_write_to(Arena *arena, Dgram *dgram, Message *msg,
                            ConnAddr *to) {
   u64 size;
   s32 sent;
@@ -124,10 +125,10 @@ b32 dgram_message_write_to(Arena *arena, Dgram *dgram, Message *msg,
   buffer = message_serialize(arena, msg, &size);
   assert(size <= sizeof(buffer));
   sent = conn_write_to(dgram->conn, buffer, size, to);
-  if (sent <= 0) {
-    return false;
+  if (sent == CONN_ERROR) {
+    return CONN_ERROR;
   }
-  return true;
+  return CONN_OK;
 }
 
 Message *dgram_message_read_from(Arena *arena, Dgram *dgram, ConnAddr *from) {
@@ -135,7 +136,7 @@ Message *dgram_message_read_from(Arena *arena, Dgram *dgram, ConnAddr *from) {
   u8 buffer[1024];
   Message *msg;
   size = conn_read_from(dgram->conn, buffer, sizeof(buffer), from);
-  if (size <= 0) {
+  if (size == CONN_ERROR) {
     return 0;
   }
   assert(size <= sizeof(buffer));

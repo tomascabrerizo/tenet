@@ -101,15 +101,15 @@ typedef struct Stream {
 } Stream;
 
 typedef void (*MessageCallback)(Stream *stream, Message *msg, void *param);
-void stream_proccess_messages(Arena *arena, Stream *stream,
-                              MessageCallback callback);
-b32 stream_message_write(Arena *arena, Stream *stream, Message *msg);
+u32 stream_proccess_messages(Arena *arena, Stream *stream,
+                             MessageCallback callback, void *param);
+u32 stream_message_write(Arena *arena, Stream *stream, Message *msg);
 
 typedef struct Dgram {
   Conn conn;
 } Dgram;
 
-b32 dgram_message_write_to(Arena *arena, Dgram *dgram, Message *msg,
+u32 dgram_message_write_to(Arena *arena, Dgram *dgram, Message *msg,
                            struct ConnAddr *to);
 Message *dgram_message_read_from(Arena *arena, Dgram *dgram,
                                  struct ConnAddr *from);
