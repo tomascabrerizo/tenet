@@ -24,7 +24,6 @@ typedef struct Context {
 
   Stream ctrl;
   Dgram stun;
-
   ConnAddr *ctrl_addr;
   ConnAddr *stun_addr;
 
@@ -266,7 +265,6 @@ void event_loop_process(Context *ctx) {
       dllist_remove(peer->messages_first, peer->messages_last, msg);
       res = stream_message_write(&ctx->event_arena, &peer->stream,
                                  (Message *)msg);
-
       if (res == CONN_ERROR) {
         peer_disconnect(ctx, peer);
         goto next;
