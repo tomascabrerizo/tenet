@@ -12,9 +12,12 @@ Message *message_deserialize(Arena *arena, u8 *buffer, u64 size) {
   msg = arena_push(arena, sizeof(*msg), 8);
   msg->header.type = (MessageType)read_u8_be(buffer);
   switch (msg->header.type) {
-  case MessageType_TEST: {
-    msg->test.test = read_u32_be(buffer);
-    return msg;
+  case MessageType_STUN_RESPONSE: {
+    msg->stun_response.address = read_u32_be(buffer);
+    msg->stun_response.port = read_u16_be(buffer);
+  } break;
+  case MessageType_STUN: {
+    /* Tomi: empty body*/
   } break;
   case MessageType_INVALID:
   case MessageType_COUNT: {
@@ -40,8 +43,12 @@ void message_serialize_internal(Message *msg, u8 *buffer, u64 *size) {
   write_u32_be_or_count(buffer, (u32)(*size), total_size);
   write_u8_be_or_count(buffer, (u8)msg->header.type, total_size);
   switch (msg->header.type) {
-  case MessageType_TEST: {
-    write_u32_be_or_count(buffer, msg->test.test, total_size);
+  case MessageType_STUN_RESPONSE: {
+    write_u32_be_or_count(buffer, msg->stun_response.address, total_size);
+    write_u16_be_or_count(buffer, msg->stun_response.port, total_size);
+  } break;
+  case MessageType_STUN: {
+    /* Tomi: empty body*/
   } break;
   case MessageType_INVALID:
   case MessageType_COUNT: {

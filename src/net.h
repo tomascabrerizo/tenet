@@ -21,6 +21,10 @@ void conn_init(void);
 
 struct ConnAddr *conn_address_create(struct Arena *arena);
 struct ConnAddr *conn_address(struct Arena *arena, char *address, u16 port);
+struct ConnAddr *conn_address_raw(struct Arena *arena, u32 address, u16 port);
+void conn_address_get_address_and_port(struct ConnAddr *addr, u32 *address,
+                                       u16 *port);
+void conn_address_set(struct ConnAddr *dst, struct ConnAddr *src);
 
 struct ConnSet *conn_set_create(struct Arena *arena);
 void conn_set_clear(struct ConnSet *set);

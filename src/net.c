@@ -42,12 +42,29 @@ ConnAddr *conn_address_create(Arena *arena) {
   return addr;
 }
 
-ConnAddr *conn_address(Arena *arena, char *address, u16 port) {
+ConnAddr *conn_address_raw(struct Arena *arena, u32 address, u16 port) {
   ConnAddr *addr = conn_address_create(arena);
   addr->addr_in.sin_family = AF_INET;
   addr->addr_in.sin_port = htons(port);
+  addr->addr_in.sin_addr.S_un.S_addr = htonl(address);
+  return addr;
+}
+
+ConnAddr *conn_address(Arena *arena, char *address, u16 port) {
+  ConnAddr *addr;
+  addr = conn_address_raw(arena, 0, port);
   inet_pton(addr->addr_in.sin_family, address, &addr->addr_in.sin_addr);
   return addr;
+}
+
+void conn_address_get_address_and_port(ConnAddr *addr, u32 *address,
+                                       u16 *port) {
+  *address = ntohl(addr->addr_in.sin_addr.S_un.S_addr);
+  *port = ntohs(addr->addr_in.sin_port);
+}
+
+void conn_address_set(ConnAddr *dst, ConnAddr *src) {
+  memcpy(dst, src, sizeof(ConnAddr));
 }
 
 ConnSet *conn_set_create(Arena *arena) {

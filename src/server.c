@@ -11,6 +11,13 @@ typedef struct Peer {
   struct Peer *prev;
 } Peer;
 
+typedef struct StunMessage {
+  Message msg;
+  ConnAddr *addr;
+  struct StunMessage *next;
+  struct StunMessage *prev;
+} StunMessage;
+
 typedef struct Context {
   Arena arena;
   Arena event_arena;
@@ -24,15 +31,56 @@ typedef struct Context {
   ConnSet *read;
   ConnSet *write;
 
-  Peer *peers_fist;
+  Peer *peers_first;
   Peer *peers_last;
+
+  StunMessage *stun_messages_first;
+  StunMessage *stun_messages_last;
 
   Peer *peers_first_free;
   MessageHeader *messages_first_free;
+  StunMessage *stun_messages_first_free;
 
   u32 timeout;
   b32 running;
 } Context;
+
+Message *message_alloc(Context *ctx) {
+  Message *msg;
+  if (ctx->messages_first_free) {
+    msg = (Message *)ctx->messages_first_free;
+    ctx->messages_first_free = ctx->messages_first_free->next;
+  } else {
+    msg = (Message *)arena_push(&ctx->arena, sizeof(*msg), 8);
+  }
+  memset(msg, 0, sizeof(*msg));
+  return msg;
+}
+
+void message_free(Context *ctx, Message *msg) {
+  msg->header.next = ctx->messages_first_free;
+  msg->header.prev = 0;
+  ctx->messages_first_free = &msg->header;
+}
+
+StunMessage *stun_message_alloc(Context *ctx) {
+  StunMessage *stun_msg;
+  if (ctx->stun_messages_first_free) {
+    stun_msg = ctx->stun_messages_first_free;
+    ctx->stun_messages_first_free = ctx->stun_messages_first_free->next;
+  } else {
+    stun_msg = (StunMessage *)arena_push(&ctx->arena, sizeof(*stun_msg), 8);
+    stun_msg->addr = conn_address_raw(&ctx->arena, 0, 0);
+  }
+  memset(&stun_msg->msg, 0, sizeof(stun_msg->msg));
+  return stun_msg;
+}
+
+void stun_message_free(Context *ctx, StunMessage *msg) {
+  msg->next = ctx->stun_messages_first_free;
+  msg->prev = 0;
+  ctx->stun_messages_first_free = msg;
+}
 
 b32 ctrl_server_init(Stream *ctrl, ConnAddr *addr) {
   ConnErr tcp;
@@ -72,7 +120,7 @@ b32 stun_server_init(Dgram *stun, ConnAddr *addr) {
 
 #define DEFAULT_ARENAS_SIZE mb(10)
 
-void context_init(Context *ctx) {
+void ctx_init(Context *ctx) {
   /* Tomi: arenas setup */
   arena_init(&ctx->arena, (u8 *)malloc(DEFAULT_ARENAS_SIZE),
              DEFAULT_ARENAS_SIZE);
@@ -92,10 +140,12 @@ void context_init(Context *ctx) {
   ctx->running = true;
 
   /* Tomi: link list setup */
-  ctx->peers_fist = 0;
+  ctx->peers_first = 0;
   ctx->peers_last = 0;
   ctx->peers_first_free = 0;
   ctx->messages_first_free = 0;
+  ctx->stun_messages_first = 0;
+  ctx->stun_messages_last = 0;
 }
 
 void peer_set_timeout(Peer *peer, u32 timeout) {
@@ -115,10 +165,10 @@ void peer_connect(Context *ctx, Conn conn) {
   memset(peer, 0, sizeof(*peer));
   peer->stream.conn = conn;
   peer_set_timeout(peer, CONN_TIMEOUT_INFINITY);
-  dllist_push_back(ctx->peers_fist, ctx->peers_last, peer);
+  dllist_push_back(ctx->peers_first, ctx->peers_last, peer);
 }
 
-void peer_disconect(Context *ctx, Peer *peer) {
+void peer_disconnect(Context *ctx, Peer *peer) {
   MessageHeader *msg;
   conn_close(peer->stream.conn);
   msg = peer->messages_first;
@@ -130,7 +180,7 @@ void peer_disconect(Context *ctx, Peer *peer) {
     to_free->next = ctx->messages_first_free;
     ctx->messages_first_free = to_free;
   }
-  dllist_remove(ctx->peers_fist, ctx->peers_last, peer);
+  dllist_remove(ctx->peers_first, ctx->peers_last, peer);
   peer->next = ctx->peers_first_free;
   ctx->peers_first_free = peer;
 }
@@ -151,12 +201,12 @@ void event_loop_prepare(Context *ctx) {
 
   conn_set_clear(ctx->read);
   conn_set_clear(ctx->write);
-  conn_set_add(ctx->read, ctx->ctrl.conn);
-  conn_set_add(ctx->read, ctx->stun.conn);
+
   ctx->timeout = CONN_TIMEOUT_INFINITY;
 
+  conn_set_add(ctx->read, ctx->ctrl.conn);
   now = conn_current_time_ms();
-  for (peer = ctx->peers_fist; peer != 0; peer = peer->next) {
+  for (peer = ctx->peers_first; peer != 0; peer = peer->next) {
     u32 remaining;
     if (peer->timeout == CONN_TIMEOUT_INFINITY) {
       remaining = CONN_TIMEOUT_INFINITY;
@@ -169,6 +219,11 @@ void event_loop_prepare(Context *ctx) {
     if (!dllist_empty(peer->messages_first, peer->messages_last)) {
       conn_set_add(ctx->write, peer->stream.conn);
     }
+  }
+
+  conn_set_add(ctx->read, ctx->stun.conn);
+  if (!dllist_empty(ctx->stun_messages_first, ctx->stun_messages_last)) {
+    conn_set_add(ctx->write, ctx->stun.conn);
   }
 }
 
@@ -187,8 +242,9 @@ void event_loop_process(Context *ctx) {
     }
   }
 
-  for (peer = ctx->peers_fist; peer != 0;) {
+  for (peer = ctx->peers_first; peer != 0;) {
     Peer *next_peer = peer->next;
+
     if (conn_set_has(ctx->read, peer->stream.conn)) {
       u32 res;
       MessageCallbackParams params;
@@ -197,10 +253,62 @@ void event_loop_process(Context *ctx) {
       res = stream_proccess_messages(&ctx->event_arena, &peer->stream,
                                      message_callback, &params);
       if (res == CONN_ERROR) {
-        peer_disconect(ctx, peer);
+        peer_disconnect(ctx, peer);
+        goto next;
       }
     }
+
+    if (conn_set_has(ctx->write, peer->stream.conn)) {
+      u32 res;
+      MessageHeader *msg;
+      assert(peer->messages_first);
+      msg = peer->messages_first;
+      dllist_remove(peer->messages_first, peer->messages_last, msg);
+      res = stream_message_write(&ctx->event_arena, &peer->stream,
+                                 (Message *)msg);
+
+      if (res == CONN_ERROR) {
+        peer_disconnect(ctx, peer);
+        goto next;
+      }
+    }
+
+  next:
     peer = next_peer;
+  }
+
+  if (conn_set_has(ctx->read, ctx->stun.conn)) {
+    Message *msg;
+    ConnAddr *addr;
+    addr = conn_address_create(&ctx->event_arena);
+    msg = dgram_message_read_from(&ctx->event_arena, &ctx->stun, addr);
+    if (msg) {
+      switch (msg->header.type) {
+      case MessageType_STUN: {
+        StunMessage *stun_msg;
+        stun_msg = stun_message_alloc(ctx);
+        stun_msg->msg.stun_response.header.type = MessageType_STUN_RESPONSE;
+        conn_address_get_address_and_port(addr,
+                                          &stun_msg->msg.stun_response.address,
+                                          &stun_msg->msg.stun_response.port);
+        conn_address_set(stun_msg->addr, addr);
+        dllist_push_back(ctx->stun_messages_first, ctx->stun_messages_last,
+                         stun_msg);
+      } break;
+      default: {
+        /* Tomi: ignore unknow messages */
+      } break;
+      }
+    }
+  }
+
+  if (conn_set_has(ctx->write, ctx->stun.conn)) {
+    StunMessage *stun_msg;
+    assert(ctx->stun_messages_first);
+    stun_msg = ctx->stun_messages_first;
+    dllist_remove(ctx->stun_messages_first, ctx->stun_messages_last, stun_msg);
+    dgram_message_write_to(&ctx->event_arena, &ctx->stun, &stun_msg->msg,
+                           stun_msg->addr);
   }
 }
 
@@ -211,7 +319,7 @@ int main(void) {
   Context *ctx = &_context;
 
   conn_init();
-  context_init(ctx);
+  ctx_init(ctx);
 
   for (;;) {
     if (!ctx->running) {

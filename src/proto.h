@@ -67,7 +67,8 @@
 
 typedef enum MessageType {
   MessageType_INVALID,
-  MessageType_TEST,
+  MessageType_STUN,
+  MessageType_STUN_RESPONSE,
   MessageType_COUNT
 } MessageType;
 
@@ -77,14 +78,15 @@ typedef struct MessageHeader {
   struct MessageHeader *prev;
 } MessageHeader;
 
-typedef struct TestMessage {
+typedef struct MessageStunResponse {
   MessageHeader header;
-  b32 test;
-} TestMessage;
+  u32 address;
+  u16 port;
+} MessageStunResponse;
 
 typedef union Message {
   MessageHeader header;
-  TestMessage test;
+  MessageStunResponse stun_response;
 } Message;
 
 Message *message_deserialize(Arena *arena, u8 *buffer, u64 size);
