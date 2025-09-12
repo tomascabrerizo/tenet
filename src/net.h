@@ -27,7 +27,7 @@ void conn_set_clear(struct ConnSet *set);
 void conn_set_add(struct ConnSet *set, Conn conn);
 b32 conn_set_has(struct ConnSet *set, Conn conn);
 
-s32 conn_select(struct ConnSet *read, struct ConnSet *write, u32 ms);
+u32 conn_select(struct ConnSet *read, struct ConnSet *write, u32 ms);
 
 ConnErr conn_tcp(void);
 ConnErr conn_udp(void);

@@ -113,6 +113,7 @@ void peer_connect(Context *ctx, Conn conn) {
   }
   assert(peer);
   memset(peer, 0, sizeof(*peer));
+  peer->stream.conn = conn;
   peer_set_timeout(peer, CONN_TIMEOUT_INFINITY);
   dllist_push_back(ctx->peers_fist, ctx->peers_last, peer);
 }
@@ -134,15 +135,76 @@ void peer_disconect(Context *ctx, Peer *peer) {
   ctx->peers_first_free = peer;
 }
 
-typedef struct ContextAndPeer {
+typedef struct MessageCallbackParams {
   Context *ctx;
   Peer *peer;
-} ContextAndPeer;
+} MessageCallbackParams;
 
 void message_callback(Stream *stream, Message *msg, void *param) {
-  ContextAndPeer *ctx_and_peer = (ContextAndPeer *)param;
-  unused(ctx_and_peer);
+  MessageCallbackParams *params = (MessageCallbackParams *)param;
+  unused(params);
 }
+
+void event_loop_prepare(Context *ctx) {
+  u32 now;
+  Peer *peer;
+
+  conn_set_clear(ctx->read);
+  conn_set_clear(ctx->write);
+  conn_set_add(ctx->read, ctx->ctrl.conn);
+  conn_set_add(ctx->read, ctx->stun.conn);
+  ctx->timeout = CONN_TIMEOUT_INFINITY;
+
+  now = conn_current_time_ms();
+  for (peer = ctx->peers_fist; peer != 0; peer = peer->next) {
+    u32 remaining;
+    if (peer->timeout == CONN_TIMEOUT_INFINITY) {
+      remaining = CONN_TIMEOUT_INFINITY;
+    } else {
+      remaining = max(peer->timeout - (now - peer->last_activity), 0);
+    }
+    ctx->timeout = min(ctx->timeout, remaining);
+
+    conn_set_add(ctx->read, peer->stream.conn);
+    if (!dllist_empty(peer->messages_first, peer->messages_last)) {
+      conn_set_add(ctx->write, peer->stream.conn);
+    }
+  }
+}
+
+void event_loop_process(Context *ctx) {
+  Peer *peer;
+  u32 res;
+
+  res = conn_select(ctx->read, ctx->write, ctx->timeout);
+  assert(res != CONN_ERROR);
+
+  if (conn_set_has(ctx->read, ctx->ctrl.conn)) {
+    ConnErr other;
+    other = conn_accept(ctx->ctrl.conn, 0);
+    if (other.err == CONN_OK) {
+      peer_connect(ctx, other.conn);
+    }
+  }
+
+  for (peer = ctx->peers_fist; peer != 0;) {
+    Peer *next_peer = peer->next;
+    if (conn_set_has(ctx->read, peer->stream.conn)) {
+      u32 res;
+      MessageCallbackParams params;
+      params.ctx = ctx;
+      params.peer = peer;
+      res = stream_proccess_messages(&ctx->event_arena, &peer->stream,
+                                     message_callback, &params);
+      if (res == CONN_ERROR) {
+        peer_disconect(ctx, peer);
+      }
+    }
+    peer = next_peer;
+  }
+}
+
+void event_loop_cleanup(Context *ctx) { ctx->event_arena.used = 0; }
 
 int main(void) {
   static Context _context;
@@ -152,68 +214,13 @@ int main(void) {
   context_init(ctx);
 
   for (;;) {
-    Peer *peer;
     if (!ctx->running) {
       break;
     }
 
-    /* Tomi: setup event loop */
-    {
-      u32 now;
-
-      conn_set_clear(ctx->read);
-      conn_set_clear(ctx->write);
-      conn_set_add(ctx->read, ctx->ctrl.conn);
-      conn_set_add(ctx->read, ctx->stun.conn);
-      ctx->timeout = CONN_TIMEOUT_INFINITY;
-
-      now = conn_current_time_ms();
-      for (peer = ctx->peers_fist; peer != 0; peer = peer->next) {
-        u32 remaining;
-        if (peer->timeout == CONN_TIMEOUT_INFINITY) {
-          remaining = CONN_TIMEOUT_INFINITY;
-        } else {
-          remaining = max(peer->timeout - (now - peer->last_activity), 0);
-        }
-        ctx->timeout = min(ctx->timeout, remaining);
-
-        conn_set_add(ctx->read, peer->stream.conn);
-        if (!dllist_empty(peer->messages_first, peer->messages_last)) {
-          conn_set_add(ctx->write, peer->stream.conn);
-        }
-      }
-      conn_select(ctx->read, ctx->write, ctx->timeout);
-    }
-
-    /* Tomi: proccess events */
-    {
-      if (conn_set_has(ctx->read, ctx->ctrl.conn)) {
-        ConnErr other;
-        other = conn_accept(ctx->ctrl.conn, 0);
-        if (other.err == CONN_OK) {
-          peer_connect(ctx, other.conn);
-        }
-      }
-
-      for (peer = ctx->peers_fist; peer != 0;) {
-        Peer *next_peer = peer->next;
-        if (conn_set_has(ctx->read, peer->stream.conn)) {
-          u32 res;
-          ContextAndPeer ctx_and_peer;
-          ctx_and_peer.ctx = ctx;
-          ctx_and_peer.peer = peer;
-          res = stream_proccess_messages(&ctx->event_arena, &peer->stream,
-                                         message_callback, &ctx_and_peer);
-          if (res == CONN_ERROR) {
-            peer_disconect(ctx, peer);
-          }
-        }
-        peer = next_peer;
-      }
-    }
-
-    /* Tomi: terminate event */
-    ctx->event_arena.used = 0;
+    event_loop_prepare(ctx);
+    event_loop_process(ctx);
+    event_loop_cleanup(ctx);
   }
 
   return 0;

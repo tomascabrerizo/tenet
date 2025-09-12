@@ -72,8 +72,9 @@ b32 conn_set_has(ConnSet *set, Conn conn) {
   return FD_ISSET(sock, &set->fds);
 }
 
-s32 conn_select(ConnSet *read, ConnSet *write, u32 ms) {
+u32 conn_select(ConnSet *read, ConnSet *write, u32 ms) {
   struct timeval val, *val_ptr;
+  s32 res;
   fd_set *fd_read, *fd_write;
   val_ptr = 0;
   if (ms != ((u32)-1)) {
@@ -88,7 +89,11 @@ s32 conn_select(ConnSet *read, ConnSet *write, u32 ms) {
   if (write) {
     fd_write = &write->fds;
   }
-  return select(0, fd_read, fd_write, 0, val_ptr);
+  res = select(0, fd_read, fd_write, 0, val_ptr);
+  if (res == SOCKET_ERROR) {
+    return CONN_ERROR;
+  }
+  return res;
 }
 
 ConnErr conn_tcp(void) {
