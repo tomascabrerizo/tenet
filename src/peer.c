@@ -38,6 +38,39 @@ typedef struct Context {
   b32 running;
 } Context;
 
+/* TODO: this piece of code is in the peer and server file twice */
+Message *message_alloc(Context *ctx) {
+  Message *msg;
+  if (ctx->messages_first_free) {
+    msg = (Message *)ctx->messages_first_free;
+    ctx->messages_first_free = ctx->messages_first_free->next;
+  } else {
+    msg = (Message *)arena_push(&ctx->arena, sizeof(*msg), 8);
+  }
+  memset(msg, 0, sizeof(*msg));
+  return msg;
+}
+
+void message_free(Context *ctx, Message *msg) {
+  msg->header.next = ctx->messages_first_free;
+  msg->header.prev = 0;
+  ctx->messages_first_free = &msg->header;
+}
+
+void ctx_stun_message_push(Context *ctx, Message *msg) {
+  MessageHeader *header;
+  header = &msg->header;
+  dllist_push_back(ctx->stun_messages_first, ctx->stun_messages_last, header);
+}
+
+Message *ctx_stun_message_pop(Context *ctx) {
+  MessageHeader *header;
+  assert(!dllist_empty(ctx->stun_messages_first, ctx->stun_messages_last));
+  header = ctx->stun_messages_first;
+  dllist_remove(ctx->stun_messages_first, ctx->stun_messages_last, header);
+  return (Message *)header;
+}
+
 #define SERVER_ADDRESS "192.168.100.197"
 #define CTRL_PORT 8080
 #define STUN_PORT 8081
@@ -162,28 +195,41 @@ void event_loop_cleanup(Context *ctx) { ctx->event_arena.used = 0; }
 void stun_on_timeout(Context *ctx) {
   switch (ctx->state) {
   case State_DONT_KNOW_IT_SELF: {
-    /* TODO: queue up a stun message to stun server */
+    Message *msg = message_alloc(ctx);
+    msg->header.type = MessageType_STUN;
+    ctx_stun_message_push(ctx, msg);
     ctx->timeout = 200;
   } break;
   case State_KNOW_IT_SELF: {
   } break;
   }
 }
+
 void stun_on_read(Context *ctx) {
   switch (ctx->state) {
   case State_DONT_KNOW_IT_SELF: {
-    /* TODO: read message */
-    ctx->state = State_KNOW_IT_SELF;
-    ctx->timeout = CONN_TIMEOUT_INFINITY;
+    Message *msg;
+    ConnAddr *from;
+    from = conn_address_create(&ctx->event_arena);
+    msg = dgram_message_read_from(&ctx->event_arena, &ctx->stun, from);
+    if (msg->header.type == MessageType_STUN_RESPONSE) {
+      /* TODO: save own public address and port */
+      ctx->state = State_KNOW_IT_SELF;
+      ctx->timeout = CONN_TIMEOUT_INFINITY;
+    }
   } break;
   case State_KNOW_IT_SELF: {
   } break;
   }
 }
+
 void stun_on_write(Context *ctx) {
   switch (ctx->state) {
   case State_DONT_KNOW_IT_SELF: {
-    /* TODO: get the message from the queue and send it to stun server */
+    Message *msg;
+    msg = ctx_stun_message_pop(ctx);
+    dgram_message_write_to(&ctx->event_arena, &ctx->stun, msg, ctx->stun_addr);
+    message_free(ctx, msg);
   } break;
   case State_KNOW_IT_SELF: {
   } break;

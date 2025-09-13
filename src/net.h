@@ -9,7 +9,7 @@ typedef struct ConnSet ConnSet;
 
 #define CONN_TIMEOUT_INFINITY ((u32) - 1)
 #define CONN_INVALID ((u32) - 1)
-#define CONN_ERROR ((u32)1)
+#define CONN_ERROR ((u32) - 1)
 #define CONN_OK ((u32)0)
 
 typedef struct ConnErr {

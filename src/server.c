@@ -44,6 +44,7 @@ typedef struct Context {
   b32 running;
 } Context;
 
+/* TODO: this piece of code is in the peer and server file twice */
 Message *message_alloc(Context *ctx) {
   Message *msg;
   if (ctx->messages_first_free) {

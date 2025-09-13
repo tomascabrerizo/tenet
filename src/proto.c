@@ -24,7 +24,7 @@ Message *message_deserialize(Arena *arena, u8 *buffer, u64 size) {
     assert(!"invalid code path");
   }
   }
-  return 0;
+  return msg;
 }
 
 void message_serialize_internal(Message *msg, u8 *buffer, u64 *size);
@@ -130,7 +130,6 @@ u32 dgram_message_write_to(Arena *arena, Dgram *dgram, Message *msg,
   s32 sent;
   u8 *buffer;
   buffer = message_serialize(arena, msg, &size);
-  assert(size <= sizeof(buffer));
   sent = conn_write_to(dgram->conn, buffer, size, to);
   if (sent == CONN_ERROR) {
     return CONN_ERROR;
