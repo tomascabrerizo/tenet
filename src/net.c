@@ -1,10 +1,13 @@
 #include "core.h"
 #include "net.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+
+#include <iphlpapi.h>
 
 static b32 performance_frequency_init = false;
 static LARGE_INTEGER performance_frequency;
@@ -65,6 +68,13 @@ void conn_address_get_address_and_port(ConnAddr *addr, u32 *address,
 
 void conn_address_set(ConnAddr *dst, ConnAddr *src) {
   memcpy(dst, src, sizeof(ConnAddr));
+}
+
+b32 conn_address_equals(struct ConnAddr *addr0, struct ConnAddr *addr1) {
+  return addr0->addr_in.sin_family == addr1->addr_in.sin_family &&
+         addr0->addr_in.sin_port == addr1->addr_in.sin_port &&
+         addr0->addr_in.sin_addr.S_un.S_addr ==
+             addr1->addr_in.sin_addr.S_un.S_addr;
 }
 
 ConnSet *conn_set_create(Arena *arena) {
@@ -244,4 +254,61 @@ void conn_close(Conn conn) {
   SOCKET sock;
   sock = (SOCKET)conn;
   closesocket(sock);
+}
+
+void conn_get_local_addr_and_port(Conn conn, u32 *address, u16 *port) {
+  s32 res, addr_len;
+  ConnAddr addr;
+  SOCKET sock;
+  sock = (SOCKET)conn;
+  addr_len = sizeof(addr.addr_in);
+  res = getsockname(sock, (struct sockaddr *)&addr.addr_in, &addr_len);
+  assert(res != SOCKET_ERROR);
+  conn_address_get_address_and_port(&addr, address, port);
+}
+
+struct sockaddr_in *get_default_network_adapter_addr(Arena *arena) {
+  u32 res;
+  DWORD best_index;
+  unsigned long adapters_buffer_size;
+  IP_ADAPTER_ADDRESSES *adapters, *current;
+  struct sockaddr_in addr_in;
+  addr_in.sin_family = AF_INET;
+  inet_pton(addr_in.sin_family, "8.8.8.8", &addr_in.sin_addr);
+  res = GetBestInterface(addr_in.sin_addr.S_un.S_addr, &best_index);
+  if (res != NO_ERROR) {
+    return 0;
+  }
+
+  adapters_buffer_size = (unsigned long)kb(10);
+  adapters = arena_push(arena, adapters_buffer_size, 8);
+
+  res = GetAdaptersAddresses(AF_INET,
+                             GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+                                 GAA_FLAG_SKIP_DNS_SERVER |
+                                 GAA_FLAG_SKIP_FRIENDLY_NAME,
+                             0, adapters, &adapters_buffer_size);
+
+  if (res != ERROR_SUCCESS) {
+    return 0;
+  }
+
+  for (current = adapters; current != 0; current = current->Next) {
+    if (current->IfIndex == best_index) {
+      IP_ADAPTER_UNICAST_ADDRESS *unicast_addr;
+      for (unicast_addr = current->FirstUnicastAddress; unicast_addr != 0;
+           unicast_addr = unicast_addr->Next) {
+        struct sockaddr *addr = unicast_addr->Address.lpSockaddr;
+        if (addr->sa_family == AF_INET) {
+          return (struct sockaddr_in *)addr;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+void test(Arena *arena) {
+  struct sockaddr_in *addr = get_default_network_adapter_addr(arena);
+  assert(addr);
 }

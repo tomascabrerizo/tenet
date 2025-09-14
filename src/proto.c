@@ -152,3 +152,45 @@ Message *dgram_message_read_from(Arena *arena, Dgram *dgram, ConnAddr *from) {
   msg = message_deserialize(arena, buffer, size);
   return msg;
 }
+
+void proto_init(Protocol *proto, Arena *arena) {
+  memset(proto, 0, sizeof(*proto));
+  proto->arena = arena;
+}
+
+Message *proto_message_alloc(Protocol *proto) {
+  Message *msg;
+  if (proto->messages_first_free) {
+    msg = (Message *)proto->messages_first_free;
+    proto->messages_first_free = proto->messages_first_free->next;
+  } else {
+    msg = (Message *)arena_push(proto->arena, sizeof(*msg), 8);
+  }
+  memset(msg, 0, sizeof(*msg));
+  return msg;
+}
+
+void proto_message_free(Protocol *proto, Message *msg) {
+  msg->header.next = proto->messages_first_free;
+  msg->header.prev = 0;
+  proto->messages_first_free = &msg->header;
+}
+
+AddrMessage *proto_addr_message_alloc(Protocol *proto) {
+  AddrMessage *addr_msg;
+  if (proto->addr_messages_first_free) {
+    addr_msg = proto->addr_messages_first_free;
+    proto->addr_messages_first_free = proto->addr_messages_first_free->next;
+  } else {
+    addr_msg = (AddrMessage *)arena_push(proto->arena, sizeof(*addr_msg), 8);
+    addr_msg->addr = conn_address_create(proto->arena);
+  }
+  memset(&addr_msg->msg, 0, sizeof(addr_msg->msg));
+  return addr_msg;
+}
+
+void proto_addr_message_free(Protocol *proto, AddrMessage *msg) {
+  msg->next = proto->addr_messages_first_free;
+  msg->prev = 0;
+  proto->addr_messages_first_free = msg;
+}

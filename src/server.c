@@ -11,16 +11,11 @@ typedef struct Peer {
   struct Peer *prev;
 } Peer;
 
-typedef struct StunMessage {
-  Message msg;
-  ConnAddr *addr;
-  struct StunMessage *next;
-  struct StunMessage *prev;
-} StunMessage;
-
 typedef struct Context {
   Arena arena;
   Arena event_arena;
+
+  Protocol proto;
 
   Stream ctrl;
   Dgram stun;
@@ -33,54 +28,16 @@ typedef struct Context {
   Peer *peers_first;
   Peer *peers_last;
 
-  StunMessage *stun_messages_first;
-  StunMessage *stun_messages_last;
+  AddrMessage *addr_messages_first;
+  AddrMessage *addr_messages_last;
 
   Peer *peers_first_free;
-  MessageHeader *messages_first_free;
-  StunMessage *stun_messages_first_free;
 
   u32 timeout;
   b32 running;
 } Context;
 
 /* TODO: this piece of code is in the peer and server file twice */
-Message *message_alloc(Context *ctx) {
-  Message *msg;
-  if (ctx->messages_first_free) {
-    msg = (Message *)ctx->messages_first_free;
-    ctx->messages_first_free = ctx->messages_first_free->next;
-  } else {
-    msg = (Message *)arena_push(&ctx->arena, sizeof(*msg), 8);
-  }
-  memset(msg, 0, sizeof(*msg));
-  return msg;
-}
-
-void message_free(Context *ctx, Message *msg) {
-  msg->header.next = ctx->messages_first_free;
-  msg->header.prev = 0;
-  ctx->messages_first_free = &msg->header;
-}
-
-StunMessage *stun_message_alloc(Context *ctx) {
-  StunMessage *stun_msg;
-  if (ctx->stun_messages_first_free) {
-    stun_msg = ctx->stun_messages_first_free;
-    ctx->stun_messages_first_free = ctx->stun_messages_first_free->next;
-  } else {
-    stun_msg = (StunMessage *)arena_push(&ctx->arena, sizeof(*stun_msg), 8);
-    stun_msg->addr = conn_address_raw(&ctx->arena, 0, 0);
-  }
-  memset(&stun_msg->msg, 0, sizeof(stun_msg->msg));
-  return stun_msg;
-}
-
-void stun_message_free(Context *ctx, StunMessage *msg) {
-  msg->next = ctx->stun_messages_first_free;
-  msg->prev = 0;
-  ctx->stun_messages_first_free = msg;
-}
 
 b32 ctrl_server_init(Stream *ctrl, ConnAddr *addr) {
   ConnErr tcp;
@@ -127,6 +84,9 @@ void ctx_init(Context *ctx) {
   arena_init(&ctx->event_arena, (u8 *)malloc(DEFAULT_ARENAS_SIZE),
              DEFAULT_ARENAS_SIZE);
 
+  /* Tomi: protocol setup */
+  proto_init(&ctx->proto, &ctx->arena);
+
   /* Tomi: ctrl server setup */
   ctx->ctrl_addr = conn_address(&ctx->arena, SERVER_ADDRESS, CTRL_PORT);
   assert(ctrl_server_init(&ctx->ctrl, ctx->ctrl_addr));
@@ -143,9 +103,8 @@ void ctx_init(Context *ctx) {
   ctx->peers_first = 0;
   ctx->peers_last = 0;
   ctx->peers_first_free = 0;
-  ctx->messages_first_free = 0;
-  ctx->stun_messages_first = 0;
-  ctx->stun_messages_last = 0;
+  ctx->addr_messages_first = 0;
+  ctx->addr_messages_last = 0;
 }
 
 void peer_set_timeout(Peer *peer, u32 timeout) {
@@ -177,8 +136,7 @@ void peer_disconnect(Context *ctx, Peer *peer) {
     to_free = msg;
     msg = msg->next;
     dllist_remove(peer->messages_first, peer->messages_last, to_free);
-    to_free->next = ctx->messages_first_free;
-    ctx->messages_first_free = to_free;
+    proto_message_free(&ctx->proto, (Message *)to_free);
   }
   dllist_remove(ctx->peers_first, ctx->peers_last, peer);
   peer->next = ctx->peers_first_free;
@@ -222,7 +180,7 @@ void event_loop_prepare(Context *ctx) {
   }
 
   conn_set_add(ctx->read, ctx->stun.conn);
-  if (!dllist_empty(ctx->stun_messages_first, ctx->stun_messages_last)) {
+  if (!dllist_empty(ctx->addr_messages_first, ctx->addr_messages_last)) {
     conn_set_add(ctx->write, ctx->stun.conn);
   }
 }
@@ -284,15 +242,15 @@ void event_loop_process(Context *ctx) {
     if (msg) {
       switch (msg->header.type) {
       case MessageType_STUN: {
-        StunMessage *stun_msg;
-        stun_msg = stun_message_alloc(ctx);
-        stun_msg->msg.stun_response.header.type = MessageType_STUN_RESPONSE;
+        AddrMessage *addr_msg;
+        addr_msg = proto_addr_message_alloc(&ctx->proto);
+        addr_msg->msg.stun_response.header.type = MessageType_STUN_RESPONSE;
         conn_address_get_address_and_port(addr,
-                                          &stun_msg->msg.stun_response.address,
-                                          &stun_msg->msg.stun_response.port);
-        conn_address_set(stun_msg->addr, addr);
-        dllist_push_back(ctx->stun_messages_first, ctx->stun_messages_last,
-                         stun_msg);
+                                          &addr_msg->msg.stun_response.address,
+                                          &addr_msg->msg.stun_response.port);
+        conn_address_set(addr_msg->addr, addr);
+        dllist_push_back(ctx->addr_messages_first, ctx->addr_messages_last,
+                         addr_msg);
       } break;
       default: {
         /* Tomi: ignore unknow messages */
@@ -302,12 +260,13 @@ void event_loop_process(Context *ctx) {
   }
 
   if (conn_set_has(ctx->write, ctx->stun.conn)) {
-    StunMessage *stun_msg;
-    assert(ctx->stun_messages_first);
-    stun_msg = ctx->stun_messages_first;
-    dllist_remove(ctx->stun_messages_first, ctx->stun_messages_last, stun_msg);
-    dgram_message_write_to(&ctx->event_arena, &ctx->stun, &stun_msg->msg,
-                           stun_msg->addr);
+    AddrMessage *addr_msg;
+    assert(ctx->addr_messages_first);
+    addr_msg = ctx->addr_messages_first;
+    dllist_remove(ctx->addr_messages_first, ctx->addr_messages_last, addr_msg);
+    dgram_message_write_to(&ctx->event_arena, &ctx->stun, &addr_msg->msg,
+                           addr_msg->addr);
+    proto_addr_message_free(&ctx->proto, addr_msg);
   }
 }
 

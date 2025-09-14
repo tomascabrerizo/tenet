@@ -1,12 +1,14 @@
 #ifndef _CORE_H_
 #define _CORE_H_
 
+#if 0
 #if defined(_MSC_VER)
 #define inline __forceinline
 #elif defined(__clang__) || defined(__GNUC__)
 #define inline __attribute__((always_inline)) inline
 #else
 #error "failed to define inline"
+#endif
 #endif
 
 #include <assert.h>

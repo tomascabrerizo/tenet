@@ -8,6 +8,8 @@ typedef struct Context {
   Arena arena;
   Arena event_arena;
 
+  Protocol proto;
+
   Stream ctrl;
   Dgram stun;
   ConnAddr *ctrl_addr;
@@ -21,10 +23,8 @@ typedef struct Context {
   MessageHeader *messages_first;
   MessageHeader *messages_last;
 
-  MessageHeader *stun_messages_first;
-  MessageHeader *stun_messages_last;
-
-  MessageHeader *messages_first_free;
+  AddrMessage *addr_messages_first;
+  AddrMessage *addr_messages_last;
 
   EventCallback stun_on_timeout;
   EventCallback stun_on_read;
@@ -36,44 +36,17 @@ typedef struct Context {
 
   u32 timeout;
   b32 running;
+
+  u32 own_addr;
+  u16 own_port;
+  u32 own_local_addr;
+  u16 own_local_port;
 } Context;
 
-/* TODO: this piece of code is in the peer and server file twice */
-Message *message_alloc(Context *ctx) {
-  Message *msg;
-  if (ctx->messages_first_free) {
-    msg = (Message *)ctx->messages_first_free;
-    ctx->messages_first_free = ctx->messages_first_free->next;
-  } else {
-    msg = (Message *)arena_push(&ctx->arena, sizeof(*msg), 8);
-  }
-  memset(msg, 0, sizeof(*msg));
-  return msg;
-}
-
-void message_free(Context *ctx, Message *msg) {
-  msg->header.next = ctx->messages_first_free;
-  msg->header.prev = 0;
-  ctx->messages_first_free = &msg->header;
-}
-
-void ctx_stun_message_push(Context *ctx, Message *msg) {
-  MessageHeader *header;
-  header = &msg->header;
-  dllist_push_back(ctx->stun_messages_first, ctx->stun_messages_last, header);
-}
-
-Message *ctx_stun_message_pop(Context *ctx) {
-  MessageHeader *header;
-  assert(!dllist_empty(ctx->stun_messages_first, ctx->stun_messages_last));
-  header = ctx->stun_messages_first;
-  dllist_remove(ctx->stun_messages_first, ctx->stun_messages_last, header);
-  return (Message *)header;
-}
-
 #define SERVER_ADDRESS "192.168.100.197"
-#define CTRL_PORT 8080
-#define STUN_PORT 8081
+#define SERVER_CTRL_PORT 8080
+#define SERVER_STUN_PORT 8081
+#define STUN_PORT 8082
 
 #define DEFAULT_ARENAS_SIZE mb(10)
 
@@ -100,6 +73,7 @@ b32 stun_init(Dgram *stun) {
     return false;
   }
   stun->conn = udp.conn;
+
   return true;
 }
 
@@ -107,6 +81,7 @@ void ctx_init(Context *ctx, EventCallback stun_on_timeout,
               EventCallback stun_on_read, EventCallback stun_on_write,
               EventCallback ctrl_on_timeout, EventCallback ctrl_on_read,
               EventCallback ctrl_on_write) {
+
   memset(ctx, 0, sizeof(*ctx));
 
   /* Tomi: arenas setup */
@@ -115,11 +90,16 @@ void ctx_init(Context *ctx, EventCallback stun_on_timeout,
   arena_init(&ctx->event_arena, (u8 *)malloc(DEFAULT_ARENAS_SIZE),
              DEFAULT_ARENAS_SIZE);
 
+  test(&ctx->arena);
+
+  /* Tomi: protocol setup */
+  proto_init(&ctx->proto, &ctx->arena);
+
   /* Tomi: ctrl setup */
-  ctx->ctrl_addr = conn_address(&ctx->arena, SERVER_ADDRESS, CTRL_PORT);
+  ctx->ctrl_addr = conn_address(&ctx->arena, SERVER_ADDRESS, SERVER_CTRL_PORT);
   assert(ctrl_init(&ctx->ctrl, ctx->ctrl_addr));
   /* Tomi: stun setup */
-  ctx->stun_addr = conn_address(&ctx->arena, SERVER_ADDRESS, STUN_PORT);
+  ctx->stun_addr = conn_address(&ctx->arena, SERVER_ADDRESS, SERVER_STUN_PORT);
   assert(stun_init(&ctx->stun));
 
   /* Tomi: select sets setup */
@@ -149,7 +129,7 @@ void event_loop_prepare(Context *ctx) {
   }
 
   conn_set_add(ctx->read, ctx->stun.conn);
-  if (!dllist_empty(ctx->stun_messages_first, ctx->stun_messages_last)) {
+  if (!dllist_empty(ctx->addr_messages_first, ctx->addr_messages_last)) {
     conn_set_add(ctx->write, ctx->stun.conn);
   }
 }
@@ -195,12 +175,15 @@ void event_loop_cleanup(Context *ctx) { ctx->event_arena.used = 0; }
 void stun_on_timeout(Context *ctx) {
   switch (ctx->state) {
   case State_DONT_KNOW_IT_SELF: {
-    Message *msg = message_alloc(ctx);
-    msg->header.type = MessageType_STUN;
-    ctx_stun_message_push(ctx, msg);
+    AddrMessage *addr_msg = proto_addr_message_alloc(&ctx->proto);
+    addr_msg->msg.header.type = MessageType_STUN;
+    conn_address_set(addr_msg->addr, ctx->stun_addr);
+    dllist_push_back(ctx->addr_messages_first, ctx->addr_messages_last,
+                     addr_msg);
     ctx->timeout = 200;
   } break;
   case State_KNOW_IT_SELF: {
+    /* TODO: send keep alive messages to keep the public port mapped */
   } break;
   }
 }
@@ -212,10 +195,14 @@ void stun_on_read(Context *ctx) {
     ConnAddr *from;
     from = conn_address_create(&ctx->event_arena);
     msg = dgram_message_read_from(&ctx->event_arena, &ctx->stun, from);
-    if (msg->header.type == MessageType_STUN_RESPONSE) {
-      /* TODO: save own public address and port */
-      ctx->state = State_KNOW_IT_SELF;
-      ctx->timeout = CONN_TIMEOUT_INFINITY;
+    if (conn_address_equals(ctx->stun_addr, from)) {
+      if (msg->header.type == MessageType_STUN_RESPONSE) {
+        /* TODO: save own public address and port */
+        ctx->own_addr = msg->stun_response.address;
+        ctx->own_port = msg->stun_response.port;
+        ctx->state = State_KNOW_IT_SELF;
+        ctx->timeout = 5000;
+      }
     }
   } break;
   case State_KNOW_IT_SELF: {
@@ -225,13 +212,14 @@ void stun_on_read(Context *ctx) {
 
 void stun_on_write(Context *ctx) {
   switch (ctx->state) {
+  case State_KNOW_IT_SELF:
   case State_DONT_KNOW_IT_SELF: {
-    Message *msg;
-    msg = ctx_stun_message_pop(ctx);
-    dgram_message_write_to(&ctx->event_arena, &ctx->stun, msg, ctx->stun_addr);
-    message_free(ctx, msg);
-  } break;
-  case State_KNOW_IT_SELF: {
+    AddrMessage *addr_msg;
+    assert(!dllist_empty(ctx->addr_messages_first, ctx->addr_messages_last));
+    addr_msg = ctx->addr_messages_first;
+    dgram_message_write_to(&ctx->event_arena, &ctx->stun, &addr_msg->msg,
+                           addr_msg->addr);
+    proto_addr_message_free(&ctx->proto, addr_msg);
   } break;
   }
 }

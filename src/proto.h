@@ -116,4 +116,25 @@ u32 dgram_message_write_to(Arena *arena, Dgram *dgram, Message *msg,
 Message *dgram_message_read_from(Arena *arena, Dgram *dgram,
                                  struct ConnAddr *from);
 
+typedef struct AddrMessage {
+  Message msg;
+  ConnAddr *addr;
+  struct AddrMessage *next;
+  struct AddrMessage *prev;
+} AddrMessage;
+
+typedef struct Protocol {
+  struct Arena *arena;
+  MessageHeader *messages_first_free;
+  AddrMessage *addr_messages_first_free;
+} Protocol;
+
+void proto_init(Protocol *proto, struct Arena *arena);
+
+Message *proto_message_alloc(Protocol *proto);
+void proto_message_free(Protocol *proto, Message *msg);
+
+AddrMessage *proto_addr_message_alloc(Protocol *proto);
+void proto_addr_message_free(Protocol *proto, AddrMessage *msg);
+
 #endif

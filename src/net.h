@@ -24,6 +24,7 @@ struct ConnAddr *conn_address(struct Arena *arena, char *address, u16 port);
 struct ConnAddr *conn_address_raw(struct Arena *arena, u32 address, u16 port);
 void conn_address_get_address_and_port(struct ConnAddr *addr, u32 *address,
                                        u16 *port);
+b32 conn_address_equals(struct ConnAddr *addr0, struct ConnAddr *addr1);
 void conn_address_set(struct ConnAddr *dst, struct ConnAddr *src);
 
 struct ConnSet *conn_set_create(struct Arena *arena);
@@ -49,5 +50,9 @@ u32 conn_write_to(Conn conn, u8 *buffer, u32 size, struct ConnAddr *to);
 u32 conn_current_time_ms(void);
 
 void conn_close(Conn conn);
+
+void conn_get_local_addr_and_port(Conn conn, u32 *address, u16 *port);
+
+void test(struct Arena *arena);
 
 #endif
