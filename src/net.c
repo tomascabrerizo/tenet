@@ -66,6 +66,13 @@ void conn_address_get_address_and_port(ConnAddr *addr, u32 *address,
   *port = ntohs(addr->addr_in.sin_port);
 }
 
+void conn_address_print(ConnAddr *addr) {
+  static char buffer[1024];
+  inet_ntop(addr->addr_in.sin_family, &addr->addr_in.sin_addr, buffer,
+            sizeof(buffer));
+  printf("%s\n", buffer);
+}
+
 void conn_address_set(ConnAddr *dst, ConnAddr *src) {
   memcpy(dst, src, sizeof(ConnAddr));
 }
@@ -267,7 +274,7 @@ void conn_get_local_addr_and_port(Conn conn, u32 *address, u16 *port) {
   conn_address_get_address_and_port(&addr, address, port);
 }
 
-struct sockaddr_in *get_default_network_adapter_addr(Arena *arena) {
+static struct sockaddr_in *get_default_network_adapter_addr(Arena *arena) {
   u32 res;
   DWORD best_index;
   unsigned long adapters_buffer_size;
@@ -308,7 +315,31 @@ struct sockaddr_in *get_default_network_adapter_addr(Arena *arena) {
   return 0;
 }
 
-void test(Arena *arena) {
-  struct sockaddr_in *addr = get_default_network_adapter_addr(arena);
-  assert(addr);
+ConnAddr *conn_get_default_network_addapter_addr(struct Arena *arena) {
+  struct sockaddr_in *addr_in;
+  ConnAddr *addr;
+  u64 mark0, mark1;
+  mark0 = arena->used;
+  addr = conn_address_create(arena);
+  mark1 = arena->used;
+  addr_in = get_default_network_adapter_addr(arena);
+  if (addr_in) {
+    memcpy(&addr->addr_in, addr_in, sizeof(addr->addr_in));
+    arena->used = mark1;
+    return addr;
+  }
+  arena->used = mark0;
+  return 0;
+}
+
+ConnAddr *conn_get_addr(Arena *arena, Conn conn) {
+  SOCKET sock;
+  ConnAddr *addr;
+  s32 res, addr_len;
+  addr = conn_address_create(arena);
+  addr_len = sizeof(addr->addr_in);
+  sock = (SOCKET)conn;
+  res = getsockname(sock, (struct sockaddr *)&addr->addr_in, &addr_len);
+  assert(res != SOCKET_ERROR);
+  return addr;
 }

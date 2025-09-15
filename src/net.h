@@ -26,6 +26,7 @@ void conn_address_get_address_and_port(struct ConnAddr *addr, u32 *address,
                                        u16 *port);
 b32 conn_address_equals(struct ConnAddr *addr0, struct ConnAddr *addr1);
 void conn_address_set(struct ConnAddr *dst, struct ConnAddr *src);
+void conn_address_print(ConnAddr *addr);
 
 struct ConnSet *conn_set_create(struct Arena *arena);
 void conn_set_clear(struct ConnSet *set);
@@ -53,6 +54,7 @@ void conn_close(Conn conn);
 
 void conn_get_local_addr_and_port(Conn conn, u32 *address, u16 *port);
 
-void test(struct Arena *arena);
+struct ConnAddr *conn_get_default_network_addapter_addr(struct Arena *arena);
+ConnAddr *conn_get_addr(Arena *arena, Conn conn);
 
 #endif

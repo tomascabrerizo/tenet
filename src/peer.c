@@ -14,6 +14,7 @@ typedef struct Context {
   Dgram stun;
   ConnAddr *ctrl_addr;
   ConnAddr *stun_addr;
+  ConnAddr *local_addr;
 
   ConnSet *read;
   ConnSet *write;
@@ -46,9 +47,17 @@ typedef struct Context {
 #define SERVER_ADDRESS "192.168.100.197"
 #define SERVER_CTRL_PORT 8080
 #define SERVER_STUN_PORT 8081
-#define STUN_PORT 8082
 
 #define DEFAULT_ARENAS_SIZE mb(10)
+
+void print_le_address(u32 addr) {
+  u8 b0, b1, b2, b3;
+  b0 = (addr >> 24) & 0xff;
+  b1 = (addr >> 16) & 0xff;
+  b2 = (addr >> 8) & 0xff;
+  b3 = (addr >> 0) & 0xff;
+  printf("%d.%d.%d.%d\n", b0, b1, b2, b3);
+}
 
 b32 ctrl_init(Stream *ctrl, ConnAddr *addr) {
   ConnErr tcp;
@@ -90,8 +99,6 @@ void ctx_init(Context *ctx, EventCallback stun_on_timeout,
   arena_init(&ctx->event_arena, (u8 *)malloc(DEFAULT_ARENAS_SIZE),
              DEFAULT_ARENAS_SIZE);
 
-  test(&ctx->arena);
-
   /* Tomi: protocol setup */
   proto_init(&ctx->proto, &ctx->arena);
 
@@ -101,6 +108,22 @@ void ctx_init(Context *ctx, EventCallback stun_on_timeout,
   /* Tomi: stun setup */
   ctx->stun_addr = conn_address(&ctx->arena, SERVER_ADDRESS, SERVER_STUN_PORT);
   assert(stun_init(&ctx->stun));
+
+  u64 mark = ctx->arena.used;
+  ConnAddr *default_addr = conn_get_default_network_addapter_addr(&ctx->arena);
+  assert(default_addr);
+  assert(conn_bind(ctx->stun.conn, default_addr) != CONN_ERROR);
+  ctx->arena.used = mark;
+
+  ctx->local_addr = conn_get_addr(&ctx->arena, ctx->stun.conn);
+  conn_address_get_address_and_port(ctx->local_addr, &ctx->own_local_addr,
+                                    &ctx->own_local_port);
+
+  print_le_address(ctx->own_local_addr);
+  conn_address_print(ctx->local_addr);
+
+  u32 break_here = 0;
+  unused(break_here);
 
   /* Tomi: select sets setup */
   ctx->read = conn_set_create(&ctx->arena);
