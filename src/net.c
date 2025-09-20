@@ -73,6 +73,14 @@ void conn_address_print(ConnAddr *addr) {
   printf("%s\n", buffer);
 }
 
+void conn_address_string(ConnAddr *addr, u8 *buffer, u32 buffer_size) {
+  char ip[64];
+  u16 port;
+  port = addr->addr_in.sin_port;
+  inet_ntop(addr->addr_in.sin_family, &addr->addr_in.sin_addr, ip, sizeof(ip));
+  sprintf_s((char *)buffer, buffer_size, "%s:%d", ip, port);
+}
+
 void conn_address_set(ConnAddr *dst, ConnAddr *src) {
   memcpy(dst, src, sizeof(ConnAddr));
 }

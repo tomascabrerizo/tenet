@@ -24,6 +24,8 @@ struct ConnAddr *conn_address(struct Arena *arena, char *address, u16 port);
 struct ConnAddr *conn_address_raw(struct Arena *arena, u32 address, u16 port);
 void conn_address_get_address_and_port(struct ConnAddr *addr, u32 *address,
                                        u16 *port);
+void conn_address_string(ConnAddr *addr, u8 *buffer, u32 buffer_size);
+
 b32 conn_address_equals(struct ConnAddr *addr0, struct ConnAddr *addr1);
 void conn_address_set(struct ConnAddr *dst, struct ConnAddr *src);
 void conn_address_print(ConnAddr *addr);

@@ -69,6 +69,9 @@ typedef enum MessageType {
   MessageType_INVALID,
   MessageType_STUN,
   MessageType_STUN_RESPONSE,
+  MessageType_KEEP_ALIVE,
+  MessageType_CONNECT,
+  MessageType_FIRST_PEER,
   MessageType_COUNT
 } MessageType;
 
@@ -80,13 +83,22 @@ typedef struct MessageHeader {
 
 typedef struct MessageStunResponse {
   MessageHeader header;
-  u32 address;
+  u32 addr;
   u16 port;
 } MessageStunResponse;
+
+typedef struct MessageConnect {
+  MessageHeader header;
+  u32 addr;
+  u16 port;
+  u32 local_addr;
+  u16 local_port;
+} MessageConnect;
 
 typedef union Message {
   MessageHeader header;
   MessageStunResponse stun_response;
+  MessageConnect connect;
 } Message;
 
 Message *message_deserialize(Arena *arena, u8 *buffer, u64 size);

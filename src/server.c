@@ -142,15 +142,31 @@ void peer_disconnect(Context *ctx, Peer *peer) {
   peer->next = ctx->peers_first_free;
   ctx->peers_first_free = peer;
 }
-
 typedef struct MessageCallbackParams {
   Context *ctx;
   Peer *peer;
 } MessageCallbackParams;
 
+Message *push_ctrl_message(Context *ctx, Peer *peer) {
+  MessageHeader *msg = (MessageHeader *)proto_message_alloc(&ctx->proto);
+  dllist_push_back(peer->messages_first, peer->messages_last, msg);
+  return (Message *)msg;
+}
+
+void push_first_peer_message(Context *ctx, Peer *peer) {
+  Message *msg = push_ctrl_message(ctx, peer);
+  msg->header.type = MessageType_FIRST_PEER;
+}
+
 void message_callback(Stream *stream, Message *msg, void *param) {
   MessageCallbackParams *params = (MessageCallbackParams *)param;
-  unused(params);
+  switch (msg->header.type) {
+  case MessageType_CONNECT: {
+    push_first_peer_message(params->ctx, params->peer);
+  } break;
+  default: {
+  } break;
+  }
 }
 
 void event_loop_prepare(Context *ctx) {
@@ -236,21 +252,26 @@ void event_loop_process(Context *ctx) {
 
   if (conn_set_has(ctx->read, ctx->stun.conn)) {
     Message *msg;
-    ConnAddr *addr;
-    addr = conn_address_create(&ctx->event_arena);
-    msg = dgram_message_read_from(&ctx->event_arena, &ctx->stun, addr);
+    ConnAddr *from;
+    from = conn_address_create(&ctx->event_arena);
+    msg = dgram_message_read_from(&ctx->event_arena, &ctx->stun, from);
     if (msg) {
       switch (msg->header.type) {
       case MessageType_STUN: {
         AddrMessage *addr_msg;
         addr_msg = proto_addr_message_alloc(&ctx->proto);
         addr_msg->msg.stun_response.header.type = MessageType_STUN_RESPONSE;
-        conn_address_get_address_and_port(addr,
-                                          &addr_msg->msg.stun_response.address,
+        conn_address_get_address_and_port(from,
+                                          &addr_msg->msg.stun_response.addr,
                                           &addr_msg->msg.stun_response.port);
-        conn_address_set(addr_msg->addr, addr);
+        conn_address_set(addr_msg->addr, from);
         dllist_push_back(ctx->addr_messages_first, ctx->addr_messages_last,
                          addr_msg);
+      } break;
+      case MessageType_KEEP_ALIVE: {
+        static u8 buffer[64];
+        conn_address_string(from, buffer, sizeof(buffer));
+        printf("Keep alive package receive from: %s\n", buffer);
       } break;
       default: {
         /* Tomi: ignore unknow messages */

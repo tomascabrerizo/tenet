@@ -1,6 +1,9 @@
 #include "proto.h"
 
-typedef enum State { State_DONT_KNOW_IT_SELF, State_KNOW_IT_SELF } State;
+typedef enum State {
+  State_DONT_KNOW_IT_SELF,
+  State_KNOW_IT_SELF,
+} State;
 
 struct Context;
 typedef void (*EventCallback)(struct Context *ctx);
@@ -119,11 +122,7 @@ void ctx_init(Context *ctx, EventCallback stun_on_timeout,
   conn_address_get_address_and_port(ctx->local_addr, &ctx->own_local_addr,
                                     &ctx->own_local_port);
 
-  print_le_address(ctx->own_local_addr);
   conn_address_print(ctx->local_addr);
-
-  u32 break_here = 0;
-  unused(break_here);
 
   /* Tomi: select sets setup */
   ctx->read = conn_set_create(&ctx->arena);
@@ -195,40 +194,61 @@ void event_loop_process(Context *ctx) {
 
 void event_loop_cleanup(Context *ctx) { ctx->event_arena.used = 0; }
 
+Message *push_ctrl_message(Context *ctx) {
+  MessageHeader *msg = (MessageHeader *)proto_message_alloc(&ctx->proto);
+  dllist_push_back(ctx->messages_first, ctx->messages_last, msg);
+  return (Message *)msg;
+}
+
+AddrMessage *push_stun_message(Context *ctx) {
+  AddrMessage *addr_msg = proto_addr_message_alloc(&ctx->proto);
+  conn_address_set(addr_msg->addr, ctx->stun_addr);
+  dllist_push_back(ctx->addr_messages_first, ctx->addr_messages_last, addr_msg);
+  return addr_msg;
+}
+
+void push_connect_message(Context *ctx) {
+  Message *msg = push_ctrl_message(ctx);
+  msg->header.type = MessageType_CONNECT;
+  msg->connect.addr = ctx->own_addr;
+  msg->connect.port = ctx->own_port;
+  msg->connect.local_addr = ctx->own_local_addr;
+  msg->connect.local_port = ctx->own_local_port;
+}
+
 void stun_on_timeout(Context *ctx) {
   switch (ctx->state) {
   case State_DONT_KNOW_IT_SELF: {
-    AddrMessage *addr_msg = proto_addr_message_alloc(&ctx->proto);
+    AddrMessage *addr_msg = push_stun_message(ctx);
     addr_msg->msg.header.type = MessageType_STUN;
-    conn_address_set(addr_msg->addr, ctx->stun_addr);
-    dllist_push_back(ctx->addr_messages_first, ctx->addr_messages_last,
-                     addr_msg);
     ctx->timeout = 200;
   } break;
   case State_KNOW_IT_SELF: {
-    /* TODO: send keep alive messages to keep the public port mapped */
+    AddrMessage *addr_msg = push_stun_message(ctx);
+    addr_msg->msg.header.type = MessageType_KEEP_ALIVE;
   } break;
   }
 }
 
 void stun_on_read(Context *ctx) {
+  Message *msg;
+  ConnAddr *from;
+  from = conn_address_create(&ctx->event_arena);
+  msg = dgram_message_read_from(&ctx->event_arena, &ctx->stun, from);
   switch (ctx->state) {
   case State_DONT_KNOW_IT_SELF: {
-    Message *msg;
-    ConnAddr *from;
-    from = conn_address_create(&ctx->event_arena);
-    msg = dgram_message_read_from(&ctx->event_arena, &ctx->stun, from);
     if (conn_address_equals(ctx->stun_addr, from)) {
       if (msg->header.type == MessageType_STUN_RESPONSE) {
-        /* TODO: save own public address and port */
-        ctx->own_addr = msg->stun_response.address;
+        ctx->own_addr = msg->stun_response.addr;
         ctx->own_port = msg->stun_response.port;
         ctx->state = State_KNOW_IT_SELF;
+        push_connect_message(ctx);
         ctx->timeout = 5000;
       }
     }
   } break;
-  case State_KNOW_IT_SELF: {
+  default: {
+    // NOTE: ignore message
   } break;
   }
 }
@@ -240,6 +260,7 @@ void stun_on_write(Context *ctx) {
     AddrMessage *addr_msg;
     assert(!dllist_empty(ctx->addr_messages_first, ctx->addr_messages_last));
     addr_msg = ctx->addr_messages_first;
+    dllist_remove(ctx->addr_messages_first, ctx->addr_messages_last, addr_msg);
     dgram_message_write_to(&ctx->event_arena, &ctx->stun, &addr_msg->msg,
                            addr_msg->addr);
     proto_addr_message_free(&ctx->proto, addr_msg);
@@ -247,12 +268,38 @@ void stun_on_write(Context *ctx) {
   }
 }
 
+void ctrl_on_timeout(Context *ctx) {}
+
+void message_callback(Stream *stream, Message *msg, void *param) {
+  switch (msg->header.type) {
+  case MessageType_FIRST_PEER: {
+    u32 break_here = 0;
+    unused(break_here);
+  } break;
+  default: {
+  } break;
+  }
+}
+
+void ctrl_on_read(Context *ctx) {
+  stream_proccess_messages(&ctx->event_arena, &ctx->ctrl, message_callback, 0);
+}
+
+void ctrl_on_write(Context *ctx) {
+  MessageHeader *msg;
+  assert(ctx->messages_first);
+  msg = ctx->messages_first;
+  dllist_remove(ctx->messages_first, ctx->messages_last, msg);
+  stream_message_write(&ctx->event_arena, &ctx->ctrl, (Message *)msg);
+}
+
 int main(void) {
   static Context _context;
   Context *ctx = &_context;
 
   conn_init();
-  ctx_init(ctx, stun_on_timeout, stun_on_read, stun_on_write, 0, 0, 0);
+  ctx_init(ctx, stun_on_timeout, stun_on_read, stun_on_write, ctrl_on_timeout,
+           ctrl_on_read, ctrl_on_write);
 
   for (;;) {
     if (!ctx->running) {
