@@ -169,44 +169,51 @@ Message *dgram_message_read_from(Arena *arena, Dgram *dgram, ConnAddr *from) {
   return msg;
 }
 
-void proto_init(Protocol *proto, Arena *arena) {
-  memset(proto, 0, sizeof(*proto));
-  proto->arena = arena;
+void message_allocator_init(MessageAllocator *allocator, Arena *arena) {
+  memset(allocator, 0, sizeof(*allocator));
+  allocator->arena = arena;
 }
 
-Message *proto_message_alloc(Protocol *proto) {
+Message *message_alloc(MessageAllocator *allocator) {
   Message *msg;
-  if (proto->messages_first_free) {
-    msg = (Message *)proto->messages_first_free;
-    proto->messages_first_free = proto->messages_first_free->next;
+  if (allocator->first_free) {
+    msg = (Message *)allocator->first_free;
+    allocator->first_free = allocator->first_free->next;
   } else {
-    msg = (Message *)arena_push(proto->arena, sizeof(*msg), 8);
+    msg = (Message *)arena_push(allocator->arena, sizeof(*msg), 8);
   }
   memset(msg, 0, sizeof(*msg));
   return msg;
 }
 
-void proto_message_free(Protocol *proto, Message *msg) {
-  msg->header.next = proto->messages_first_free;
+void message_free(MessageAllocator *allocator, Message *msg) {
+  msg->header.next = allocator->first_free;
   msg->header.prev = 0;
-  proto->messages_first_free = &msg->header;
+  allocator->first_free = &msg->header;
 }
 
-AddrMessage *proto_addr_message_alloc(Protocol *proto) {
+void addr_message_allocator_init(AddrMessageAllocator *allocator,
+                                 Arena *arena) {
+  memset(allocator, 0, sizeof(*allocator));
+  allocator->arena = arena;
+}
+
+AddrMessage *addr_message_alloc(AddrMessageAllocator *allocator) {
   AddrMessage *addr_msg;
-  if (proto->addr_messages_first_free) {
-    addr_msg = proto->addr_messages_first_free;
-    proto->addr_messages_first_free = proto->addr_messages_first_free->next;
+  if (allocator->first_free) {
+    addr_msg = allocator->first_free;
+    allocator->first_free = allocator->first_free->next;
   } else {
-    addr_msg = (AddrMessage *)arena_push(proto->arena, sizeof(*addr_msg), 8);
-    addr_msg->addr = conn_address_create(proto->arena);
+    addr_msg =
+        (AddrMessage *)arena_push(allocator->arena, sizeof(*addr_msg), 8);
+    addr_msg->addr = conn_address_create(allocator->arena);
   }
   memset(&addr_msg->msg, 0, sizeof(addr_msg->msg));
   return addr_msg;
 }
 
-void proto_addr_message_free(Protocol *proto, AddrMessage *msg) {
-  msg->next = proto->addr_messages_first_free;
+void addr_message_free(AddrMessageAllocator *allocator, AddrMessage *msg) {
+  msg->next = allocator->first_free;
   msg->prev = 0;
-  proto->addr_messages_first_free = msg;
+  allocator->first_free = msg;
 }

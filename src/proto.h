@@ -135,18 +135,22 @@ typedef struct AddrMessage {
   struct AddrMessage *prev;
 } AddrMessage;
 
-typedef struct Protocol {
-  struct Arena *arena;
-  MessageHeader *messages_first_free;
-  AddrMessage *addr_messages_first_free;
-} Protocol;
+typedef struct MessageAllocator {
+  Arena *arena;
+  MessageHeader *first_free;
+} MessageAllocator;
 
-void proto_init(Protocol *proto, struct Arena *arena);
+void message_allocator_init(MessageAllocator *allocator, Arena *arena);
+Message *message_alloc(MessageAllocator *allocator);
+void message_free(MessageAllocator *allocator, Message *msg);
 
-Message *proto_message_alloc(Protocol *proto);
-void proto_message_free(Protocol *proto, Message *msg);
+typedef struct AddrMessageAllocator {
+  Arena *arena;
+  AddrMessage *first_free;
+} AddrMessageAllocator;
 
-AddrMessage *proto_addr_message_alloc(Protocol *proto);
-void proto_addr_message_free(Protocol *proto, AddrMessage *msg);
+void addr_message_allocator_init(AddrMessageAllocator *allocator, Arena *arena);
+AddrMessage *addr_message_alloc(AddrMessageAllocator *allocator);
+void addr_message_free(AddrMessageAllocator *allocator, AddrMessage *msg);
 
 #endif

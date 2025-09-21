@@ -1,0 +1,16 @@
+Peer:
+- debe mantener una coneccion tcp con el server
+- debe mantener abierto el puerto udp con dada peer
+Estados de peer:
+- dont know it self
+- know it self
+- connected
+  - hole punching (list of peers to connect)
+  - fowarding packets
+  - send keep alive packets
+
+Server:
+- El servidor simplemente debe sivir los mensajes y enviar 
+la respuesta correspondiente a cada mensaje (no tiene un estado)
+- lista de peers conectadas al servidor
+- stun para descubrir ip y port;

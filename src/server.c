@@ -7,15 +7,38 @@ typedef struct Peer {
   u32 timeout;
   u32 last_activity;
 
+  u32 raw_addr;
+  u16 raw_port;
+  u32 raw_local_addr;
+  u16 raw_local_port;
+
   struct Peer *next;
   struct Peer *prev;
 } Peer;
+
+typedef struct PeerList {
+  Peer *first;
+  Peer *last;
+} PeerList;
+
+typedef struct MessageList {
+  MessageAllocator *allocator;
+  MessageHeader *first;
+  MessageHeader *last;
+} MessageList;
+
+typedef struct AddrMessageList {
+  AddrMessageAllocator *allocator;
+  AddrMessage *first;
+  AddrMessage *last;
+} AddrMessageList;
 
 typedef struct Context {
   Arena arena;
   Arena event_arena;
 
-  Protocol proto;
+  MessageAllocator message_allocator;
+  AddrMessageAllocator addr_message_allocator;
 
   Stream ctrl;
   Dgram stun;
@@ -84,8 +107,9 @@ void ctx_init(Context *ctx) {
   arena_init(&ctx->event_arena, (u8 *)malloc(DEFAULT_ARENAS_SIZE),
              DEFAULT_ARENAS_SIZE);
 
-  /* Tomi: protocol setup */
-  proto_init(&ctx->proto, &ctx->arena);
+  /* Tomi: allocators setup */
+  message_allocator_init(&ctx->message_allocator, &ctx->arena);
+  addr_message_allocator_init(&ctx->addr_message_allocator, &ctx->arena);
 
   /* Tomi: ctrl server setup */
   ctx->ctrl_addr = conn_address(&ctx->arena, SERVER_ADDRESS, CTRL_PORT);
@@ -136,7 +160,7 @@ void peer_disconnect(Context *ctx, Peer *peer) {
     to_free = msg;
     msg = msg->next;
     dllist_remove(peer->messages_first, peer->messages_last, to_free);
-    proto_message_free(&ctx->proto, (Message *)to_free);
+    message_free(&ctx->message_allocator, (Message *)to_free);
   }
   dllist_remove(ctx->peers_first, ctx->peers_last, peer);
   peer->next = ctx->peers_first_free;
@@ -148,7 +172,7 @@ typedef struct MessageCallbackParams {
 } MessageCallbackParams;
 
 Message *push_ctrl_message(Context *ctx, Peer *peer) {
-  MessageHeader *msg = (MessageHeader *)proto_message_alloc(&ctx->proto);
+  MessageHeader *msg = (MessageHeader *)message_alloc(&ctx->message_allocator);
   dllist_push_back(peer->messages_first, peer->messages_last, msg);
   return (Message *)msg;
 }
@@ -158,11 +182,45 @@ void push_first_peer_message(Context *ctx, Peer *peer) {
   msg->header.type = MessageType_FIRST_PEER;
 }
 
+Peer *peer_copy(Arena *arena, Peer *peer) {
+  Peer *copy = arena_push(arena, sizeof(*copy), 8);
+  memcpy(copy, peer, sizeof(Peer));
+  return copy;
+}
+
+PeerList get_others_peers_list(Arena *arena, Peer *first, Peer *last,
+                               Peer *peer) {
+  PeerList res;
+  Peer *other;
+  memset(&res, 0, sizeof(res));
+  for (other = first; other != 0; other = other->next) {
+    if (other == peer) {
+      continue;
+    }
+    Peer *copy = peer_copy(arena, other);
+    dllist_push_back(res.first, res.last, copy);
+  }
+
+  return res;
+}
+
 void message_callback(Stream *stream, Message *msg, void *param) {
+  Context *ctx;
+  Peer *peer;
   MessageCallbackParams *params = (MessageCallbackParams *)param;
+  ctx = params->ctx;
+  peer = params->peer;
+
   switch (msg->header.type) {
   case MessageType_CONNECT: {
-    push_first_peer_message(params->ctx, params->peer);
+    PeerList others = get_others_peers_list(&ctx->event_arena, ctx->peers_first,
+                                            ctx->peers_last, peer);
+    if (dllist_empty(others.first, others.last)) {
+      push_first_peer_message(ctx, peer);
+    } else {
+      // TODO: push a message with the list of peers the client needs to connect
+      // TODO: push message to each other peer to connect to the new peer
+    }
   } break;
   default: {
   } break;
@@ -259,7 +317,7 @@ void event_loop_process(Context *ctx) {
       switch (msg->header.type) {
       case MessageType_STUN: {
         AddrMessage *addr_msg;
-        addr_msg = proto_addr_message_alloc(&ctx->proto);
+        addr_msg = addr_message_alloc(&ctx->addr_message_allocator);
         addr_msg->msg.stun_response.header.type = MessageType_STUN_RESPONSE;
         conn_address_get_address_and_port(from,
                                           &addr_msg->msg.stun_response.addr,
@@ -287,7 +345,7 @@ void event_loop_process(Context *ctx) {
     dllist_remove(ctx->addr_messages_first, ctx->addr_messages_last, addr_msg);
     dgram_message_write_to(&ctx->event_arena, &ctx->stun, &addr_msg->msg,
                            addr_msg->addr);
-    proto_addr_message_free(&ctx->proto, addr_msg);
+    addr_message_free(&ctx->addr_message_allocator, addr_msg);
   }
 }
 
