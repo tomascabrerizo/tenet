@@ -71,7 +71,7 @@ typedef enum MessageType {
   MessageType_STUN_RESPONSE,
   MessageType_KEEP_ALIVE,
   MessageType_CONNECT,
-  MessageType_FIRST_PEER,
+  MessageType_PEERS_TO_CONNECT,
   MessageType_COUNT
 } MessageType;
 
@@ -95,10 +95,27 @@ typedef struct MessageConnect {
   u16 local_port;
 } MessageConnect;
 
+typedef struct PeerConnected {
+  u32 addr;
+  u16 port;
+  u32 local_addr;
+  u16 local_port;
+  struct PeerConnected *next;
+  struct PeerConnected *prev;
+} PeerConnected;
+
+typedef struct MessagePeersToConnect {
+  MessageHeader header;
+  PeerConnected *first;
+  PeerConnected *last;
+  u32 count;
+} MessagePeersToConnect;
+
 typedef union Message {
   MessageHeader header;
   MessageStunResponse stun_response;
   MessageConnect connect;
+  MessagePeersToConnect peers_to_connect;
 } Message;
 
 Message *message_deserialize(Arena *arena, u8 *buffer, u64 size);

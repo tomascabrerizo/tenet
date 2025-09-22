@@ -12,6 +12,21 @@ Message *message_deserialize(Arena *arena, u8 *buffer, u64 size) {
   msg = arena_push(arena, sizeof(*msg), 8);
   msg->header.type = (MessageType)read_u8_be(buffer);
   switch (msg->header.type) {
+  case MessageType_PEERS_TO_CONNECT: {
+    u32 i;
+    msg->peers_to_connect.first = 0;
+    msg->peers_to_connect.last = 0;
+    msg->peers_to_connect.count = read_u32_be(buffer);
+    for (i = 0; i < msg->peers_to_connect.count; ++i) {
+      PeerConnected *peer = arena_push(arena, sizeof(*peer), 8);
+      peer->addr = read_u32_be(buffer);
+      peer->port = read_u16_be(buffer);
+      peer->local_addr = read_u32_be(buffer);
+      peer->local_port = read_u16_be(buffer);
+      dllist_push_back(msg->peers_to_connect.first, msg->peers_to_connect.last,
+                       peer);
+    }
+  } break;
   case MessageType_CONNECT: {
     msg->connect.addr = read_u32_be(buffer);
     msg->connect.port = read_u16_be(buffer);
@@ -22,7 +37,6 @@ Message *message_deserialize(Arena *arena, u8 *buffer, u64 size) {
     msg->stun_response.addr = read_u32_be(buffer);
     msg->stun_response.port = read_u16_be(buffer);
   } break;
-  case MessageType_FIRST_PEER:
   case MessageType_KEEP_ALIVE:
   case MessageType_STUN: {
     /* Tomi: empty body*/
@@ -51,6 +65,16 @@ void message_serialize_internal(Message *msg, u8 *buffer, u64 *size) {
   write_u32_be_or_count(buffer, (u32)(*size), total_size);
   write_u8_be_or_count(buffer, (u8)msg->header.type, total_size);
   switch (msg->header.type) {
+  case MessageType_PEERS_TO_CONNECT: {
+    PeerConnected *peer;
+    write_u32_be_or_count(buffer, msg->peers_to_connect.count, total_size);
+    for (peer = msg->peers_to_connect.first; peer != 0; peer = peer->next) {
+      write_u32_be_or_count(buffer, peer->addr, total_size);
+      write_u16_be_or_count(buffer, peer->port, total_size);
+      write_u32_be_or_count(buffer, peer->local_addr, total_size);
+      write_u16_be_or_count(buffer, peer->local_port, total_size);
+    }
+  } break;
   case MessageType_CONNECT: {
     write_u32_be_or_count(buffer, msg->connect.addr, total_size);
     write_u16_be_or_count(buffer, msg->connect.port, total_size);
@@ -61,7 +85,6 @@ void message_serialize_internal(Message *msg, u8 *buffer, u64 *size) {
     write_u32_be_or_count(buffer, msg->stun_response.addr, total_size);
     write_u16_be_or_count(buffer, msg->stun_response.port, total_size);
   } break;
-  case MessageType_FIRST_PEER:
   case MessageType_KEEP_ALIVE:
   case MessageType_STUN: {
     /* Tomi: empty body*/

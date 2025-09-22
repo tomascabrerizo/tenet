@@ -287,10 +287,6 @@ void transport_on_write(Context *ctx) {
 
 void message_callback(Stream *stream, Message *msg, void *param) {
   switch (msg->header.type) {
-  case MessageType_FIRST_PEER: {
-    u32 break_here = 0;
-    unused(break_here);
-  } break;
   default: {
   } break;
   }

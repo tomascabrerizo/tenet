@@ -1,11 +1,14 @@
 #include "proto.h"
 
+typedef struct PeerList {
+  struct Peer *first;
+  struct Peer *last;
+} PeerList;
+
 typedef struct Peer {
   Stream stream;
   MessageHeader *messages_first;
   MessageHeader *messages_last;
-  u32 timeout;
-  u32 last_activity;
 
   u32 raw_addr;
   u16 raw_port;
@@ -16,23 +19,6 @@ typedef struct Peer {
   struct Peer *prev;
 } Peer;
 
-typedef struct PeerList {
-  Peer *first;
-  Peer *last;
-} PeerList;
-
-typedef struct MessageList {
-  MessageAllocator *allocator;
-  MessageHeader *first;
-  MessageHeader *last;
-} MessageList;
-
-typedef struct AddrMessageList {
-  AddrMessageAllocator *allocator;
-  AddrMessage *first;
-  AddrMessage *last;
-} AddrMessageList;
-
 typedef struct Context {
   Arena arena;
   Arena event_arena;
@@ -41,8 +27,9 @@ typedef struct Context {
   AddrMessageAllocator addr_message_allocator;
 
   Stream ctrl;
-  Dgram stun;
   ConnAddr *ctrl_addr;
+
+  Dgram stun;
   ConnAddr *stun_addr;
 
   ConnSet *read;
@@ -50,17 +37,13 @@ typedef struct Context {
 
   Peer *peers_first;
   Peer *peers_last;
+  Peer *peers_first_free;
 
   AddrMessage *addr_messages_first;
   AddrMessage *addr_messages_last;
 
-  Peer *peers_first_free;
-
-  u32 timeout;
   b32 running;
 } Context;
-
-/* TODO: this piece of code is in the peer and server file twice */
 
 b32 ctrl_server_init(Stream *ctrl, ConnAddr *addr) {
   ConnErr tcp;
@@ -120,7 +103,6 @@ void ctx_init(Context *ctx) {
   /* Tomi: select sets setup */
   ctx->read = conn_set_create(&ctx->arena);
   ctx->write = conn_set_create(&ctx->arena);
-  ctx->timeout = CONN_TIMEOUT_INFINITY;
   ctx->running = true;
 
   /* Tomi: link list setup */
@@ -129,11 +111,6 @@ void ctx_init(Context *ctx) {
   ctx->peers_first_free = 0;
   ctx->addr_messages_first = 0;
   ctx->addr_messages_last = 0;
-}
-
-void peer_set_timeout(Peer *peer, u32 timeout) {
-  peer->timeout = timeout;
-  peer->last_activity = conn_current_time_ms();
 }
 
 void peer_connect(Context *ctx, Conn conn) {
@@ -147,7 +124,6 @@ void peer_connect(Context *ctx, Conn conn) {
   assert(peer);
   memset(peer, 0, sizeof(*peer));
   peer->stream.conn = conn;
-  peer_set_timeout(peer, CONN_TIMEOUT_INFINITY);
   dllist_push_back(ctx->peers_first, ctx->peers_last, peer);
 }
 
@@ -177,17 +153,13 @@ Message *push_ctrl_message(Context *ctx, Peer *peer) {
   return (Message *)msg;
 }
 
-void push_first_peer_message(Context *ctx, Peer *peer) {
-  Message *msg = push_ctrl_message(ctx, peer);
-  msg->header.type = MessageType_FIRST_PEER;
-}
-
 Peer *peer_copy(Arena *arena, Peer *peer) {
   Peer *copy = arena_push(arena, sizeof(*copy), 8);
   memcpy(copy, peer, sizeof(Peer));
   return copy;
 }
 
+#if 0 
 PeerList get_others_peers_list(Arena *arena, Peer *first, Peer *last,
                                Peer *peer) {
   PeerList res;
@@ -203,6 +175,51 @@ PeerList get_others_peers_list(Arena *arena, Peer *first, Peer *last,
 
   return res;
 }
+#endif
+
+PeerConnected *allocate_peer_connected_node(Arena *arena, Peer *peer) {
+  PeerConnected *node = arena_push(arena, sizeof(*node), 8);
+  node->addr = peer->raw_addr;
+  node->port = peer->raw_port;
+  node->local_addr = peer->raw_local_addr;
+  node->local_port = peer->raw_local_port;
+  node->next = 0;
+  node->prev = 0;
+  return node;
+}
+
+MessagePeersToConnect *calculate_current_peer_connected_message(
+    Arena *arena, MessageAllocator *allocator, Peer *peer) {
+  PeerConnected *node;
+  MessagePeersToConnect *msg;
+  msg = (MessagePeersToConnect *)message_alloc(allocator);
+  msg->header.type = MessageType_PEERS_TO_CONNECT;
+  msg->count = 1;
+  node = allocate_peer_connected_node(arena, peer);
+  dllist_push_back(msg->first, msg->last, node);
+  return msg;
+}
+
+MessagePeersToConnect *
+calculate_others_peers_connected_message(Arena *arena,
+                                         MessageAllocator *allocator,
+                                         Peer *first, Peer *last, Peer *peer) {
+
+  MessagePeersToConnect *msg;
+  msg = (MessagePeersToConnect *)message_alloc(allocator);
+  msg->count = 0;
+  Peer *other;
+  for (other = first; other != 0; other = other->next) {
+    PeerConnected *node;
+    if (other == peer) {
+      continue;
+    }
+    msg->count++;
+    node = allocate_peer_connected_node(arena, other);
+    dllist_push_back(msg->first, msg->last, node);
+  }
+  return msg;
+}
 
 void message_callback(Stream *stream, Message *msg, void *param) {
   Context *ctx;
@@ -213,13 +230,26 @@ void message_callback(Stream *stream, Message *msg, void *param) {
 
   switch (msg->header.type) {
   case MessageType_CONNECT: {
-    PeerList others = get_others_peers_list(&ctx->event_arena, ctx->peers_first,
-                                            ctx->peers_last, peer);
-    if (dllist_empty(others.first, others.last)) {
-      push_first_peer_message(ctx, peer);
-    } else {
-      // TODO: push a message with the list of peers the client needs to connect
-      // TODO: push message to each other peer to connect to the new peer
+    Peer *other;
+    MessageHeader *header;
+
+    peer->raw_addr = msg->connect.addr;
+    peer->raw_port = msg->connect.port;
+    peer->raw_local_addr = msg->connect.local_addr;
+    peer->raw_local_port = msg->connect.local_port;
+
+    header = (MessageHeader *)calculate_others_peers_connected_message(
+        &ctx->event_arena, &ctx->message_allocator, ctx->peers_first,
+        ctx->peers_last, peer);
+    dllist_push_back(peer->messages_first, peer->messages_last, header);
+
+    header = (MessageHeader *)calculate_current_peer_connected_message(
+        &ctx->event_arena, &ctx->message_allocator, peer);
+    for (other = ctx->peers_first; other != 0; other = other->next) {
+      if (other == peer) {
+        continue;
+      }
+      dllist_push_back(other->messages_first, other->messages_last, header);
     }
   } break;
   default: {
@@ -228,25 +258,13 @@ void message_callback(Stream *stream, Message *msg, void *param) {
 }
 
 void event_loop_prepare(Context *ctx) {
-  u32 now;
   Peer *peer;
 
   conn_set_clear(ctx->read);
   conn_set_clear(ctx->write);
 
-  ctx->timeout = CONN_TIMEOUT_INFINITY;
-
   conn_set_add(ctx->read, ctx->ctrl.conn);
-  now = conn_current_time_ms();
   for (peer = ctx->peers_first; peer != 0; peer = peer->next) {
-    u32 remaining;
-    if (peer->timeout == CONN_TIMEOUT_INFINITY) {
-      remaining = CONN_TIMEOUT_INFINITY;
-    } else {
-      remaining = max(peer->timeout - (now - peer->last_activity), 0);
-    }
-    ctx->timeout = min(ctx->timeout, remaining);
-
     conn_set_add(ctx->read, peer->stream.conn);
     if (!dllist_empty(peer->messages_first, peer->messages_last)) {
       conn_set_add(ctx->write, peer->stream.conn);
@@ -263,8 +281,10 @@ void event_loop_process(Context *ctx) {
   Peer *peer;
   u32 res;
 
-  res = conn_select(ctx->read, ctx->write, ctx->timeout);
+  res = conn_select(ctx->read, ctx->write, CONN_TIMEOUT_INFINITY);
   assert(res != CONN_ERROR);
+
+  /* NOTE: ctrl socket  */
 
   if (conn_set_has(ctx->read, ctx->ctrl.conn)) {
     ConnErr other;
@@ -273,6 +293,8 @@ void event_loop_process(Context *ctx) {
       peer_connect(ctx, other.conn);
     }
   }
+
+  /* NOTE: peers sockets  */
 
   for (peer = ctx->peers_first; peer != 0;) {
     Peer *next_peer = peer->next;
@@ -307,6 +329,8 @@ void event_loop_process(Context *ctx) {
   next:
     peer = next_peer;
   }
+
+  /* NOTE: stun socket  */
 
   if (conn_set_has(ctx->read, ctx->stun.conn)) {
     Message *msg;
